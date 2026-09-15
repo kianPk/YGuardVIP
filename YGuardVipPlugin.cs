@@ -13,7 +13,7 @@ namespace YGuardVIP;
 public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 {
     public override string ModuleName => "YGuard VIP";
-    public override string ModuleVersion => "1.1.2";
+    public override string ModuleVersion => "1.1.3";
     public override string ModuleAuthor => "YGuard";
     public override string ModuleDescription => "Timed VIP DB, panel menu, guns, smoke, healthshot, votekick";
 
@@ -42,12 +42,36 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     {
         get
         {
-            // Survives plugin folder replace on update
-            var dir = Path.Combine(Server.GameDirectory, "csgo", "addons", "counterstrikesharp",
-                "configs", "plugins", "YGuardVIP");
-            Directory.CreateDirectory(dir);
-            return dir;
+            // Prefer configs path (survives plugin replace); fall back next to DLL
+            foreach (var dir in new[]
+                     {
+                         SafeJoin(Server.GameDirectory, "csgo", "addons", "counterstrikesharp", "configs", "plugins", "YGuardVIP"),
+                         Path.Combine(ModuleDirectory, "data")
+                     })
+            {
+                if (string.IsNullOrWhiteSpace(dir))
+                    continue;
+                try
+                {
+                    Directory.CreateDirectory(dir);
+                    return dir;
+                }
+                catch
+                {
+                    // try next
+                }
+            }
+
+            return ModuleDirectory;
         }
+    }
+
+    private static string? SafeJoin(string? root, params string[] parts)
+    {
+        if (string.IsNullOrWhiteSpace(root))
+            return null;
+        try { return Path.Combine(new[] { root }.Concat(parts).ToArray()); }
+        catch { return null; }
     }
 
     public override void Load(bool hotReload)
@@ -199,7 +223,8 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
                 return true;
 
             return AdminManager.PlayerHasPermissions(player, Config.VipPermission)
-                   || AdminManager.PlayerHasPermissions(player, "@css/vip");
+                   || AdminManager.PlayerHasPermissions(player, "@css/vip")
+                   || AdminManager.PlayerHasPermissions(player, "@css/root");
         }
         catch
         {
@@ -242,18 +267,35 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
     private void OpenPanel(CCSPlayerController player, CenterHtmlMenu menu)
     {
-        // Close after select — submenus must open on a deferred timer or they never appear
         menu.PostSelectAction = PostSelectAction.Close;
         MenuManager.OpenCenterHtmlMenu(this, player, menu);
+    }
+
+    /// <summary>Open menu next tick — opening during say Pre often fails silently.</summary>
+    private void DeferOpen(CCSPlayerController player, Action<CCSPlayerController> open)
+    {
+        var p = player;
+        Server.NextFrame(() =>
+        {
+            if (!p.IsValid) return;
+            try { open(p); }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "DeferOpen failed, trying ChatMenu fallback path");
+            }
+        });
     }
 
     private void DeferMenu(CCSPlayerController player, Action<CCSPlayerController> open)
     {
         var p = player;
-        AddTimer(0.08f, () =>
+        AddTimer(0.1f, () =>
         {
             if (p.IsValid)
-                open(p);
+            {
+                try { open(p); }
+                catch (Exception ex) { Logger.LogWarning(ex, "DeferMenu failed"); }
+            }
         });
     }
 
@@ -316,35 +358,47 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
     private void RunVip(CCSPlayerController player)
     {
-        if (!IsVip(player))
+        try
         {
-            Msg(player, $"{ChatColors.Red}You are not VIP.");
-            return;
-        }
+            SyncVipPermission(player);
+            if (!IsVip(player))
+            {
+                Msg(player, $"{ChatColors.Red}You are not VIP.");
+                return;
+            }
 
-        OpenVipMenu(player);
+            // Must not open menu inside say Pre — defer to next frame
+            DeferOpen(player, OpenVipMenu);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "RunVip failed");
+            Msg(player, $"{ChatColors.Red}VIP menu error — check server log.");
+        }
     }
 
     private void RunGuns(CCSPlayerController player)
     {
+        SyncVipPermission(player);
         if (!IsVip(player))
         {
             Msg(player, $"{ChatColors.Red}You are not VIP.");
             return;
         }
 
-        OpenGunsMenu(player);
+        DeferOpen(player, OpenGunsMenu);
     }
 
     private void RunVoteKick(CCSPlayerController player)
     {
+        SyncVipPermission(player);
         if (!IsVip(player))
         {
             Msg(player, $"{ChatColors.Red}You are not VIP.");
             return;
         }
 
-        OpenVoteKickMenu(player);
+        DeferOpen(player, OpenVoteKickMenu);
     }
 
     #endregion
@@ -482,9 +536,41 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
     private void OpenVipMenu(CCSPlayerController player)
     {
+        try
+        {
+            var settings = SettingsOf(player);
+            var left = _vipDb.IsActive(player.SteamID) ? _vipDb.FormatRemaining(player.SteamID) : "VIP";
+            var menu = new CenterHtmlMenu($"YGuard VIP | {left}", this);
+
+            menu.AddMenuOption($"Tag: {(settings.TagEnabled ? "ON" : "OFF")}", (p, _) =>
+            {
+                settings.TagEnabled = !settings.TagEnabled;
+                _store.Save();
+                ApplyTag(p);
+                PanelHint(p, $"VIP Tag: {(settings.TagEnabled ? "ON" : "OFF")}");
+                DeferMenu(p, OpenVipMenu);
+            });
+
+            menu.AddMenuOption($"Smoke: {settings.SmokeColor}", (p, _) => DeferMenu(p, OpenSmokeMenu));
+            menu.AddMenuOption("Free Guns", (p, _) => DeferMenu(p, OpenGunsMenu));
+
+            if (Config.VoteKickEnabled)
+                menu.AddMenuOption("Vote Kick", (p, _) => DeferMenu(p, OpenVoteKickMenu));
+
+            OpenPanel(player, menu);
+            PanelHint(player, "VIP menu opened");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "CenterHtml VIP menu failed — using ChatMenu");
+            OpenVipMenuChatFallback(player);
+        }
+    }
+
+    private void OpenVipMenuChatFallback(CCSPlayerController player)
+    {
         var settings = SettingsOf(player);
-        var left = _vipDb.IsActive(player.SteamID) ? _vipDb.FormatRemaining(player.SteamID) : "flag";
-        var menu = new CenterHtmlMenu($"YGuard VIP · {left}", this);
+        var menu = new ChatMenu("YGuard VIP");
 
         menu.AddMenuOption($"Tag: {(settings.TagEnabled ? "ON" : "OFF")}", (p, _) =>
         {
@@ -492,16 +578,47 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             _store.Save();
             ApplyTag(p);
             PanelHint(p, $"VIP Tag: {(settings.TagEnabled ? "ON" : "OFF")}");
-            DeferMenu(p, OpenVipMenu);
+            AddTimer(0.1f, () => { if (p.IsValid) OpenVipMenuChatFallback(p); });
         });
 
-        menu.AddMenuOption($"Smoke: {settings.SmokeColor}", (p, _) => DeferMenu(p, OpenSmokeMenu));
-        menu.AddMenuOption("Free Guns", (p, _) => DeferMenu(p, OpenGunsMenu));
+        menu.AddMenuOption($"Smoke: {settings.SmokeColor}", (p, _) =>
+        {
+            AddTimer(0.1f, () => { if (p.IsValid) OpenSmokeMenuChatFallback(p); });
+        });
+        menu.AddMenuOption("Free Guns", (p, _) =>
+        {
+            AddTimer(0.1f, () => { if (p.IsValid) OpenGunsMenu(p); });
+        });
 
         if (Config.VoteKickEnabled)
-            menu.AddMenuOption("Vote Kick", (p, _) => DeferMenu(p, OpenVoteKickMenu));
+        {
+            menu.AddMenuOption("Vote Kick", (p, _) =>
+            {
+                AddTimer(0.1f, () => { if (p.IsValid) OpenVoteKickMenu(p); });
+            });
+        }
 
-        OpenPanel(player, menu);
+        menu.PostSelectAction = PostSelectAction.Close;
+        MenuManager.OpenChatMenu(player, menu);
+        Msg(player, $"{ChatColors.Lime}VIP menu — type the number in chat");
+    }
+
+    private void OpenSmokeMenuChatFallback(CCSPlayerController player)
+    {
+        var settings = SettingsOf(player);
+        var menu = new ChatMenu("Smoke Color");
+        foreach (var key in Config.SmokeColors.Keys)
+        {
+            var colorKey = key;
+            menu.AddMenuOption(colorKey, (p, _) =>
+            {
+                SettingsOf(p).SmokeColor = colorKey;
+                _store.Save();
+                PanelHint(p, $"Smoke: {colorKey}");
+            });
+        }
+
+        MenuManager.OpenChatMenu(player, menu);
     }
 
     private void OpenSmokeMenu(CCSPlayerController player)
