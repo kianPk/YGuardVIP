@@ -15,7 +15,7 @@ public class YGuardVipConfig : BasePluginConfig
     public string ChatPrefix { get; set; } = " {green}[YGuard VIP]{default}";
 
     [JsonPropertyName("VipTagText")]
-    public string VipTagText { get; set; } = "★VIP★";
+    public string VipTagText { get; set; } = "ⱽᴵᴾ✶";
 
     [JsonPropertyName("DefaultTagEnabled")]
     public bool DefaultTagEnabled { get; set; } = true;

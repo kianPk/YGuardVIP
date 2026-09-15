@@ -13,7 +13,7 @@ namespace YGuardVIP;
 public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 {
     public override string ModuleName => "YGuard VIP";
-    public override string ModuleVersion => "1.0.5";
+    public override string ModuleVersion => "1.0.6";
     public override string ModuleAuthor => "YGuard";
     public override string ModuleDescription => "VIP settings, free guns, smoke, healthshot, votekick";
 
@@ -424,7 +424,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
         if (_voteActive)
         {
-            Msg(starter, $"{ChatColors.Red}A vote kick is already running.");
+            Msg(starter, $"{ChatColors.Red}A vote kick is already running. Type !yes / !no");
             return;
         }
 
@@ -435,7 +435,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             return;
         }
 
-        var menu = new ChatMenu("Vote Kick — select player");
+        var menu = new ChatMenu("Vote Kick — type number");
         var any = false;
 
         foreach (var p in Utilities.GetPlayers().OrderBy(x => x.PlayerName))
@@ -448,10 +448,18 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
                 continue;
 
             any = true;
-            var target = p;
-            var name = target.PlayerName;
-            var sid = target.SteamID;
-            menu.AddMenuOption(name, (voter, _) => StartVoteKick(voter, sid, name));
+            var name = p.PlayerName;
+            var sid = p.SteamID;
+            menu.AddMenuOption(name, (voter, _) =>
+            {
+                // Defer so ChatMenu can close cleanly before starting the vote
+                var v = voter;
+                AddTimer(0.05f, () =>
+                {
+                    if (v.IsValid)
+                        StartVoteKick(v, sid, name);
+                });
+            });
         }
 
         if (!any)
@@ -465,69 +473,124 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
     private void StartVoteKick(CCSPlayerController starter, ulong targetSteam, string targetName)
     {
-        if (!IsVip(starter) || _voteActive)
-            return;
-
-        _voteActive = true;
-        _voteTargetSteam = targetSteam;
-        _voteTargetName = targetName;
-        _voteYes.Clear();
-        _voteNo.Clear();
-        _voteYes.Add(starter.SteamID); // starter counts as YES
-        _lastVoteKickUtc = DateTime.UtcNow;
-
-        Broadcast($"{ChatColors.Orange}VOTE KICK: {ChatColors.Red}{targetName}");
-        Broadcast($"{ChatColors.Grey}Started by {starter.PlayerName} — vote in the menu or type {ChatColors.Lime}!yes {ChatColors.Grey}/ {ChatColors.Red}!no");
-        Broadcast($"{ChatColors.Grey}Need {VotesNeeded()} YES · {Config.VoteKickDurationSeconds}s");
-
-        // Open a Yes/No ballot for EVERY player (except the target)
-        foreach (var p in Utilities.GetPlayers())
+        try
         {
-            if (!p.IsValid || p.IsBot || p.IsHLTV || p.SteamID == 0)
-                continue;
-            if (p.SteamID == targetSteam)
-                continue;
+            if (!starter.IsValid)
+                return;
 
-            OpenVoteBallot(p, targetName);
-        }
-
-        PushVoteHud();
-
-        _voteTimer?.Kill();
-        _voteTimer = AddTimer(Config.VoteKickDurationSeconds, () => FinishVoteKick());
-
-        _voteHudTimer?.Kill();
-        _voteHudTimer = AddTimer(1.0f, () =>
-        {
-            if (!_voteActive)
+            if (!IsVip(starter))
             {
-                _voteHudTimer?.Kill();
-                _voteHudTimer = null;
+                Msg(starter, $"{ChatColors.Red}You are not VIP.");
                 return;
             }
 
-            PushVoteHud();
-        }, TimerFlags.REPEAT);
+            if (_voteActive)
+            {
+                Msg(starter, $"{ChatColors.Red}A vote kick is already running.");
+                return;
+            }
 
-        // Early finish if already enough yes (only starter online etc.)
-        if (_voteYes.Count >= VotesNeeded())
-            FinishVoteKick();
+            var since = (DateTime.UtcNow - _lastVoteKickUtc).TotalSeconds;
+            if (since < Config.VoteKickCooldownSeconds)
+            {
+                Msg(starter, $"{ChatColors.Red}Cooldown: {(int)(Config.VoteKickCooldownSeconds - since)}s");
+                return;
+            }
+
+            // Target still online?
+            var target = Utilities.GetPlayers().FirstOrDefault(p => p.IsValid && p.SteamID == targetSteam);
+            if (target == null)
+            {
+                Msg(starter, $"{ChatColors.Red}Player left.");
+                return;
+            }
+
+            targetName = target.PlayerName;
+
+            _voteActive = true;
+            _voteTargetSteam = targetSteam;
+            _voteTargetName = targetName;
+            _voteYes.Clear();
+            _voteNo.Clear();
+            _voteYes.Add(starter.SteamID);
+            _lastVoteKickUtc = DateTime.UtcNow;
+
+            var needed = VotesNeeded();
+
+            // Loud chat for everyone
+            Server.PrintToChatAll("====================================");
+            Broadcast($"{ChatColors.Orange}VOTE KICK → {ChatColors.Red}{targetName}");
+            Broadcast($"{ChatColors.Grey}By {starter.PlayerName} · need {ChatColors.Lime}{needed} YES {ChatColors.Grey}· {Config.VoteKickDurationSeconds}s");
+            Broadcast($"{ChatColors.Lime}Type !yes {ChatColors.Grey}or {ChatColors.Red}!no {ChatColors.Grey}(or use the menu)");
+            Server.PrintToChatAll("====================================");
+
+            Msg(starter, $"{ChatColors.Lime}Vote started. Your vote is YES.");
+
+            // Open ChatMenu ballot for every voter (CenterHtml often fails on 5Stack)
+            AddTimer(0.1f, () =>
+            {
+                if (!_voteActive) return;
+                foreach (var p in Utilities.GetPlayers())
+                {
+                    if (!p.IsValid || p.IsBot || p.IsHLTV || p.SteamID == 0)
+                        continue;
+                    if (p.SteamID == targetSteam)
+                        continue;
+                    OpenVoteBallot(p);
+                }
+            });
+
+            PushVoteHud();
+
+            _voteTimer?.Kill();
+            _voteTimer = AddTimer(Config.VoteKickDurationSeconds, () => FinishVoteKick());
+
+            _voteHudTimer?.Kill();
+            _voteHudTimer = AddTimer(1.0f, () =>
+            {
+                if (!_voteActive)
+                {
+                    _voteHudTimer?.Kill();
+                    _voteHudTimer = null;
+                    return;
+                }
+
+                PushVoteHud();
+            }, TimerFlags.REPEAT);
+
+            // Only auto-pass after a short delay so everyone sees the vote first
+            AddTimer(1.5f, () =>
+            {
+                if (_voteActive && _voteYes.Count >= VotesNeeded())
+                    FinishVoteKick();
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "StartVoteKick failed");
+            _voteActive = false;
+            Msg(starter, $"{ChatColors.Red}Vote kick failed to start.");
+        }
     }
 
-    private void OpenVoteBallot(CCSPlayerController voter, string targetName)
+    private void OpenVoteBallot(CCSPlayerController voter)
     {
         try
         {
-            var menu = new CenterHtmlMenu($"Kick {targetName}?");
+            if (!voter.IsValid || !_voteActive)
+                return;
+
+            var menu = new ChatMenu($"Kick {_voteTargetName}?  (!yes / !no)");
             menu.AddMenuOption("YES — Kick", (p, _) => CastVote(p, yes: true));
             menu.AddMenuOption("NO — Keep", (p, _) => CastVote(p, yes: false));
             menu.PostSelectAction = PostSelectAction.Close;
-            MenuManager.OpenCenterHtmlMenu(this, voter, menu);
+            MenuManager.OpenChatMenu(voter, menu);
+
+            Msg(voter, $"{ChatColors.Orange}Vote kick {_voteTargetName}: {ChatColors.Lime}!yes {ChatColors.Grey}/ {ChatColors.Red}!no");
         }
         catch (Exception ex)
         {
             Logger.LogWarning(ex, "OpenVoteBallot failed for {Name}", voter.PlayerName);
-            // Fallback chat hint
             Msg(voter, $"{ChatColors.Orange}Vote kick {_voteTargetName}: type {ChatColors.Lime}!yes {ChatColors.Grey}or {ChatColors.Red}!no");
         }
     }
@@ -564,7 +627,11 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         var voters = Utilities.GetPlayers().Count(p =>
             p.IsValid && !p.IsBot && !p.IsHLTV && p.SteamID != 0 && p.SteamID != _voteTargetSteam);
         if (voters < 1) voters = 1;
-        return Math.Max(1, (int)Math.Ceiling(voters * Config.VoteKickRatio));
+        // At least 1; with 2+ voters require majority (ratio), minimum 2 yes so it isn't instant
+        var needed = (int)Math.Ceiling(voters * Config.VoteKickRatio);
+        if (voters >= 2)
+            needed = Math.Max(2, needed);
+        return Math.Max(1, needed);
     }
 
     private void PushVoteHud()
@@ -572,17 +639,23 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         if (!_voteActive) return;
 
         var needed = VotesNeeded();
+        var line = $"VOTE KICK {_voteTargetName}  YES {_voteYes.Count}/{needed}  NO {_voteNo.Count}  (!yes / !no)";
         var html =
             $"<font color='#ffaa00'><b>VOTE KICK</b></font><br>" +
             $"<font color='#ff4444'>{_voteTargetName}</font><br>" +
-            $"<font color='#88ff88'>YES {_voteYes.Count}</font> / {needed}  " +
+            $"<font color='#88ff88'>YES {_voteYes.Count}</font>/{needed} " +
             $"<font color='#ff8888'>NO {_voteNo.Count}</font><br>" +
-            $"<font color='#cccccc'>Menu or !yes / !no</font>";
+            $"<font color='#cccccc'>!yes / !no</font>";
 
         foreach (var p in Utilities.GetPlayers())
         {
             if (!p.IsValid || p.IsBot || p.IsHLTV) continue;
-            try { p.PrintToCenterHtml(html); } catch { /* ignore */ }
+            try
+            {
+                p.PrintToCenter(line);
+                p.PrintToCenterHtml(html);
+            }
+            catch { /* ignore */ }
         }
     }
 
