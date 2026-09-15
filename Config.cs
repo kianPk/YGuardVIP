@@ -15,7 +15,7 @@ public class YGuardVipConfig : BasePluginConfig
     public string ChatPrefix { get; set; } = " {green}[YGuard VIP]{default}";
 
     [JsonPropertyName("VipTagText")]
-    public string VipTagText { get; set; } = "★VIP";
+    public string VipTagText { get; set; } = "★VIP★";
 
     [JsonPropertyName("DefaultTagEnabled")]
     public bool DefaultTagEnabled { get; set; } = true;
@@ -35,12 +35,6 @@ public class YGuardVipConfig : BasePluginConfig
 
     [JsonPropertyName("VoteKickEnabled")]
     public bool VoteKickEnabled { get; set; } = true;
-
-    [JsonPropertyName("VoteKickRatio")]
-    public float VoteKickRatio { get; set; } = 0.6f;
-
-    [JsonPropertyName("VoteKickDurationSeconds")]
-    public int VoteKickDurationSeconds { get; set; } = 30;
 
     [JsonPropertyName("VoteKickCooldownSeconds")]
     public int VoteKickCooldownSeconds { get; set; } = 120;

@@ -10,6 +10,8 @@ CounterStrikeSharp plugin for YGuard / 5Stack public Comp.
 - `!g` / `/g` / `css_g` — free gun menu (once per round)
 - One `weapon_healthshot` every round (never stacks)
 - Colored VIP chat name when tag is enabled
+- VIP tag `★VIP★` on scoreboard (toggle in `!vip`)
+- Native CS2 vote kick (`!votekick` / menu) — other players vote F1/F2; pass = kick
 
 ## VIP permission
 
