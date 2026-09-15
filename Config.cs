@@ -12,7 +12,7 @@ public class YGuardVipConfig : BasePluginConfig
     public string AdminPermission { get; set; } = "@css/root";
 
     [JsonPropertyName("ChatPrefix")]
-    public string ChatPrefix { get; set; } = " {green}[YGuard VIP]{default}";
+    public string ChatPrefix { get; set; } = "YGuard";
 
     [JsonPropertyName("VipTagText")]
     public string VipTagText { get; set; } = "ⱽᴵᴾ✶";

@@ -13,7 +13,7 @@ namespace YGuardVIP;
 public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 {
     public override string ModuleName => "YGuard VIP";
-    public override string ModuleVersion => "1.1.1";
+    public override string ModuleVersion => "1.1.2";
     public override string ModuleAuthor => "YGuard";
     public override string ModuleDescription => "Timed VIP DB, panel menu, guns, smoke, healthshot, votekick";
 
@@ -212,12 +212,32 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
     private void Msg(CCSPlayerController? player, string message)
     {
-        try { player?.PrintToChat($"{Config.ChatPrefix} {message}"); } catch { /* ignore */ }
+        try
+        {
+            // Real ChatColors — not literal {green}... text
+            player?.PrintToChat($" {ChatColors.Green}YGuard{ChatColors.Default} {message}");
+        }
+        catch { /* ignore */ }
     }
 
     private void Broadcast(string message)
     {
-        try { Server.PrintToChatAll($"{Config.ChatPrefix} {message}"); } catch { /* ignore */ }
+        try
+        {
+            Server.PrintToChatAll($" {ChatColors.Green}YGuard{ChatColors.Default} {message}");
+        }
+        catch { /* ignore */ }
+    }
+
+    /// <summary>Panel feedback — only center screen for that player, never chat (others won't see).</summary>
+    private void PanelHint(CCSPlayerController? player, string message)
+    {
+        try
+        {
+            player?.PrintToCenter(message);
+            player?.PrintToCenterHtml($"<font color='#a0ff90'>{System.Net.WebUtility.HtmlEncode(message)}</font>");
+        }
+        catch { /* ignore */ }
     }
 
     private void OpenPanel(CCSPlayerController player, CenterHtmlMenu menu)
@@ -471,7 +491,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             settings.TagEnabled = !settings.TagEnabled;
             _store.Save();
             ApplyTag(p);
-            Msg(p, $"VIP Tag: {(settings.TagEnabled ? $"{ChatColors.Lime}ON" : $"{ChatColors.Red}OFF")}");
+            PanelHint(p, $"VIP Tag: {(settings.TagEnabled ? "ON" : "OFF")}");
             DeferMenu(p, OpenVipMenu);
         });
 
@@ -497,7 +517,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             {
                 SettingsOf(p).SmokeColor = colorKey;
                 _store.Save();
-                Msg(p, $"Smoke color: {ChatColors.Lime}{colorKey}");
+                PanelHint(p, $"Smoke: {colorKey}");
                 DeferMenu(p, OpenVipMenu);
             });
         }
@@ -510,19 +530,19 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     {
         if (!player.PawnIsAlive)
         {
-            Msg(player, $"{ChatColors.Red}You must be alive.");
+            PanelHint(player, "You must be alive.");
             return;
         }
 
         if (!BenefitsAllowed())
         {
-            Msg(player, $"{ChatColors.Red}Free guns from round {Config.MinRoundForGunsAndHealthshot}+ (now round {_roundNumber}).");
+            PanelHint(player, $"Free guns from round {Config.MinRoundForGunsAndHealthshot}+ (now {_roundNumber})");
             return;
         }
 
         if (Config.GunsOncePerRound && _usedGunsThisRound.Contains(player.Slot))
         {
-            Msg(player, $"{ChatColors.Red}Already used free gun this round.");
+            PanelHint(player, "Already used free gun this round.");
             return;
         }
 
@@ -546,19 +566,19 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
             if (!BenefitsAllowed())
             {
-                Msg(player, $"{ChatColors.Red}Free guns from round {Config.MinRoundForGunsAndHealthshot}+.");
+                PanelHint(player, $"Free guns from round {Config.MinRoundForGunsAndHealthshot}+");
                 return;
             }
 
             if (Config.GunsOncePerRound && _usedGunsThisRound.Contains(player.Slot))
             {
-                Msg(player, $"{ChatColors.Red}Already used free gun this round.");
+                PanelHint(player, "Already used free gun this round.");
                 return;
             }
 
             player.GiveNamedItem(weapon);
             _usedGunsThisRound.Add(player.Slot);
-            Msg(player, $"{ChatColors.Lime}Received {displayName}");
+            PanelHint(player, $"Received {displayName}");
         }
         catch (Exception ex)
         {
@@ -716,12 +736,12 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             menu.AddMenuOption("YES — Kick", (p, _) => CastVote(p, yes: true));
             menu.AddMenuOption("NO — Keep", (p, _) => CastVote(p, yes: false));
             OpenPanel(voter, menu);
-            Msg(voter, $"{ChatColors.Orange}Vote kick {_voteTargetName}: {ChatColors.Lime}!yes {ChatColors.Grey}/ {ChatColors.Red}!no");
+            PanelHint(voter, $"Vote kick {_voteTargetName}: !yes / !no");
         }
         catch (Exception ex)
         {
             Logger.LogWarning(ex, "OpenVoteBallot failed");
-            Msg(voter, $"{ChatColors.Orange}Vote kick {_voteTargetName}: {ChatColors.Lime}!yes {ChatColors.Grey}/ {ChatColors.Red}!no");
+            PanelHint(voter, $"Vote kick {_voteTargetName}: !yes / !no");
         }
     }
 
@@ -914,18 +934,15 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             var wantTag = IsVip(player) && settings.TagEnabled;
             var tag = Config.VipTagText;
 
-            // Remember clean base name once (strip any existing VIP prefixes)
-            if (!_originalName.ContainsKey(player.Slot))
-                _originalName[player.Slot] = StripVipPrefixes(player.PlayerName ?? "Player", tag);
+            RememberBaseName(player, tag);
 
-            var baseName = StripVipPrefixes(_originalName[player.Slot], tag);
-            _originalName[player.Slot] = baseName;
+            if (!_originalName.TryGetValue(player.Slot, out var baseName) || IsPlaceholderName(baseName))
+                return; // wait until real Steam name is known — avoids "ⱽᴵᴾ✶ Player"
 
-            // Only ONE place for the tag: name prefix.
-            // Do NOT also put it in Clan — that made "VIP" appear twice.
             if (!_originalClan.ContainsKey(player.Slot))
                 _originalClan[player.Slot] = StripVipPrefixes(player.Clan ?? "", tag);
 
+            // Name prefix only (no clan VIP — avoids double tag)
             player.Clan = _originalClan.GetValueOrDefault(player.Slot, "");
 
             var newName = wantTag ? $"{tag} {baseName}" : baseName;
@@ -942,10 +959,25 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         }
     }
 
+    private void RememberBaseName(CCSPlayerController player, string tag)
+    {
+        var cleaned = StripVipPrefixes(player.PlayerName ?? "", tag);
+        if (IsPlaceholderName(cleaned))
+            return;
+
+        if (!_originalName.TryGetValue(player.Slot, out var existing) || IsPlaceholderName(existing))
+            _originalName[player.Slot] = cleaned;
+    }
+
+    private static bool IsPlaceholderName(string? name)
+        => string.IsNullOrWhiteSpace(name)
+           || name.Equals("Player", StringComparison.OrdinalIgnoreCase)
+           || name.Equals("unknown", StringComparison.OrdinalIgnoreCase);
+
     private static string StripVipPrefixes(string name, string tag)
     {
         if (string.IsNullOrEmpty(name))
-            return "Player";
+            return "";
 
         var n = name.Trim();
         for (var i = 0; i < 8; i++)
@@ -956,7 +988,6 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
                 continue;
             }
 
-            // also strip plain leftovers like "VIP " / "★VIP★ "
             if (n.StartsWith("VIP ", StringComparison.OrdinalIgnoreCase))
             {
                 n = n[4..].TrimStart();
@@ -966,7 +997,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             break;
         }
 
-        return string.IsNullOrWhiteSpace(n) ? "Player" : n;
+        return n.Trim();
     }
 
     private void ClearTag(CCSPlayerController player)
@@ -975,9 +1006,13 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         {
             if (!player.IsValid) return;
             var tag = Config.VipTagText;
-            var baseName = _originalName.TryGetValue(player.Slot, out var o)
-                ? StripVipPrefixes(o, tag)
-                : StripVipPrefixes(player.PlayerName ?? "Player", tag);
+            RememberBaseName(player, tag);
+            var baseName = _originalName.TryGetValue(player.Slot, out var o) && !IsPlaceholderName(o)
+                ? o
+                : StripVipPrefixes(player.PlayerName ?? "", tag);
+            if (IsPlaceholderName(baseName))
+                return;
+
             _originalName[player.Slot] = baseName;
             player.PlayerName = baseName;
             player.Clan = _originalClan.GetValueOrDefault(player.Slot, "");
