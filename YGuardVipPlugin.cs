@@ -13,7 +13,7 @@ namespace YGuardVIP;
 public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 {
     public override string ModuleName => "YGuard VIP";
-    public override string ModuleVersion => "1.1.3";
+    public override string ModuleVersion => "1.1.4";
     public override string ModuleAuthor => "YGuard";
     public override string ModuleDescription => "Timed VIP DB, panel menu, guns, smoke, healthshot, votekick";
 
@@ -24,6 +24,8 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     private readonly HashSet<int> _usedGunsThisRound = [];
     private readonly Dictionary<int, string> _originalClan = [];
     private readonly Dictionary<int, string> _originalName = [];
+    /// <summary>Active VIP menus per player slot — used to silence !1/!3 chat picks.</summary>
+    private readonly Dictionary<int, BaseMenu> _openMenus = [];
     private int _roundNumber;
     private bool _resetRoundOnNextStart;
 
@@ -268,7 +270,53 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     private void OpenPanel(CCSPlayerController player, CenterHtmlMenu menu)
     {
         menu.PostSelectAction = PostSelectAction.Close;
+        TrackMenu(player, menu);
         MenuManager.OpenCenterHtmlMenu(this, player, menu);
+    }
+
+    private void OpenChatPanel(CCSPlayerController player, ChatMenu menu)
+    {
+        menu.PostSelectAction = PostSelectAction.Close;
+        TrackMenu(player, menu);
+        MenuManager.OpenChatMenu(player, menu);
+    }
+
+    private void TrackMenu(CCSPlayerController player, BaseMenu menu)
+        => _openMenus[player.Slot] = menu;
+
+    private void ClearTrackedMenu(CCSPlayerController player)
+        => _openMenus.Remove(player.Slot);
+
+    /// <summary>
+    /// Handle menu number picks ourselves and hide them from public chat
+    /// (!3, /3, 3, etc.).
+    /// </summary>
+    private bool TrySelectTrackedMenu(CCSPlayerController player, int oneBasedIndex)
+    {
+        try
+        {
+            if (!_openMenus.TryGetValue(player.Slot, out var menu) || menu == null)
+                return false;
+
+            if (oneBasedIndex < 1 || oneBasedIndex > menu.MenuOptions.Count)
+                return false;
+
+            var option = menu.MenuOptions[oneBasedIndex - 1];
+            if (option.Disabled)
+                return false;
+
+            // Close tracking first so submenu DeferOpen isn't fighting the old menu
+            if (menu.PostSelectAction == PostSelectAction.Close)
+                ClearTrackedMenu(player);
+
+            option.OnSelect?.Invoke(player, option);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "TrySelectTrackedMenu failed");
+            return false;
+        }
     }
 
     /// <summary>Open menu next tick — opening during say Pre often fails silently.</summary>
@@ -314,6 +362,16 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
             if (raw.StartsWith('"') && raw.EndsWith('"') && raw.Length >= 2)
                 raw = raw[1..^1].Trim();
+
+            // Menu picks: "3", "!3", "/3", ".9" — run select ourselves, hide from chat
+            var maybeNum = raw.TrimStart('!', '/', '.').Trim();
+            if (int.TryParse(maybeNum, out var choice) && choice >= 1 && choice <= 9
+                && raw.Length <= 4
+                && (char.IsDigit(raw[0]) || raw.StartsWith('!') || raw.StartsWith('/') || raw.StartsWith('.')))
+            {
+                if (TrySelectTrackedMenu(player, choice))
+                    return HookResult.Handled;
+            }
 
             if (!(raw.StartsWith('!') || raw.StartsWith('/') || raw.StartsWith('.')))
                 return HookResult.Continue;
@@ -599,8 +657,8 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         }
 
         menu.PostSelectAction = PostSelectAction.Close;
-        MenuManager.OpenChatMenu(player, menu);
-        Msg(player, $"{ChatColors.Lime}VIP menu — type the number in chat");
+        OpenChatPanel(player, menu);
+        Msg(player, $"{ChatColors.Lime}VIP menu — type the number (hidden from chat)");
     }
 
     private void OpenSmokeMenuChatFallback(CCSPlayerController player)
@@ -618,7 +676,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             });
         }
 
-        MenuManager.OpenChatMenu(player, menu);
+        OpenChatPanel(player, menu);
     }
 
     private void OpenSmokeMenu(CCSPlayerController player)
@@ -1195,6 +1253,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         _usedGunsThisRound.Remove(playerSlot);
         _originalClan.Remove(playerSlot);
         _originalName.Remove(playerSlot);
+        _openMenus.Remove(playerSlot);
     }
 
     #endregion
