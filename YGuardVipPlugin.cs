@@ -12,7 +12,7 @@ namespace YGuardVIP;
 public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 {
     public override string ModuleName => "YGuard VIP";
-    public override string ModuleVersion => "1.0.2";
+    public override string ModuleVersion => "1.0.3";
     public override string ModuleAuthor => "YGuard";
     public override string ModuleDescription => "VIP settings, free guns, smoke, healthshot, votekick";
 
@@ -31,16 +31,6 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     private readonly HashSet<ulong> _voteNo = [];
     private DateTime _lastVoteKickUtc = DateTime.MinValue;
     private CounterStrikeSharp.API.Modules.Timers.Timer? _voteTimer;
-
-    private static readonly string[] SilentCommands =
-    [
-        "vip", "css_vip", "!vip", "/vip", ".vip",
-        "g", "css_g", "!g", "/g", ".g",
-        "guns", "!guns", "/guns",
-        "votekick", "css_votekick", "!votekick", "/votekick", ".votekick",
-        "vk", "!vk", "/vk",
-        "yes", "!yes", "/yes", "no", "!no", "/no"
-    ];
 
     public void OnConfigParsed(YGuardVipConfig config) => Config = config;
 
@@ -127,8 +117,13 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
     private HookResult HideVipCommandChat(CCSPlayerController? player, CommandInfo info)
     {
+        // IMPORTANT: returning Handled on say Pre blocks CSS from running css_* commands.
+        // So we run the VIP action ourselves, then hide the chat line.
         try
         {
+            if (player == null || !player.IsValid)
+                return HookResult.Continue;
+
             var raw = info.ArgString?.Trim() ?? "";
             if (raw.Length == 0)
                 return HookResult.Continue;
@@ -136,25 +131,78 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             if (raw.StartsWith('"') && raw.EndsWith('"') && raw.Length >= 2)
                 raw = raw[1..^1].Trim();
 
-            // Only hide chat lines that look like commands (! / .)
             if (!(raw.StartsWith('!') || raw.StartsWith('/') || raw.StartsWith('.')))
                 return HookResult.Continue;
 
-            var first = raw.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
-            var key = first.ToLowerInvariant().TrimStart('!', '/', '.');
+            var parts = raw.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+            var key = parts[0].ToLowerInvariant().TrimStart('!', '/', '.');
 
-            if (key is "vip" or "g" or "guns" or "votekick" or "vk" or "yes" or "no"
-                or "css_vip" or "css_g" or "css_votekick" or "css_vk" or "css_yes" or "css_no")
+            switch (key)
             {
-                return HookResult.Handled;
+                case "vip":
+                case "css_vip":
+                    RunVip(player);
+                    return HookResult.Handled;
+                case "g":
+                case "guns":
+                case "css_g":
+                    RunGuns(player);
+                    return HookResult.Handled;
+                case "votekick":
+                case "vk":
+                case "css_votekick":
+                case "css_vk":
+                    RunVoteKick(player);
+                    return HookResult.Handled;
+                case "yes":
+                case "css_yes":
+                    CastVote(player, yes: true);
+                    return HookResult.Handled;
+                case "no":
+                case "css_no":
+                    CastVote(player, yes: false);
+                    return HookResult.Handled;
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // never crash chat
+            Logger.LogWarning(ex, "HideVipCommandChat failed");
         }
 
         return HookResult.Continue;
+    }
+
+    private void RunVip(CCSPlayerController player)
+    {
+        if (!IsVip(player))
+        {
+            Msg(player, $"{ChatColors.Red}You are not VIP.");
+            return;
+        }
+
+        OpenVipMenu(player);
+    }
+
+    private void RunGuns(CCSPlayerController player)
+    {
+        if (!IsVip(player))
+        {
+            Msg(player, $"{ChatColors.Red}You are not VIP.");
+            return;
+        }
+
+        OpenGunsMenu(player);
+    }
+
+    private void RunVoteKick(CCSPlayerController player)
+    {
+        if (!IsVip(player))
+        {
+            Msg(player, $"{ChatColors.Red}You are not VIP.");
+            return;
+        }
+
+        OpenVoteKickMenu(player);
     }
 
     #endregion
@@ -166,13 +214,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     public void CmdVip(CCSPlayerController? player, CommandInfo _)
     {
         if (player == null || !player.IsValid) return;
-        if (!IsVip(player))
-        {
-            Msg(player, $"{ChatColors.Red}You are not VIP.");
-            return;
-        }
-
-        OpenVipMenu(player);
+        RunVip(player);
     }
 
     [ConsoleCommand("css_g", "Open free VIP guns menu")]
@@ -180,13 +222,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     public void CmdGuns(CCSPlayerController? player, CommandInfo _)
     {
         if (player == null || !player.IsValid) return;
-        if (!IsVip(player))
-        {
-            Msg(player, $"{ChatColors.Red}You are not VIP.");
-            return;
-        }
-
-        OpenGunsMenu(player);
+        RunGuns(player);
     }
 
     [ConsoleCommand("css_votekick", "VIP vote kick a player")]
@@ -194,13 +230,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     public void CmdVoteKick(CCSPlayerController? player, CommandInfo _)
     {
         if (player == null || !player.IsValid) return;
-        if (!IsVip(player))
-        {
-            Msg(player, $"{ChatColors.Red}You are not VIP.");
-            return;
-        }
-
-        OpenVoteKickMenu(player);
+        RunVoteKick(player);
     }
 
     [ConsoleCommand("css_vk", "Alias for votekick")]
@@ -255,7 +285,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     private void OpenVipMenu(CCSPlayerController player)
     {
         var settings = SettingsOf(player);
-        var menu = new CenterHtmlMenu("YGuard VIP Settings", this);
+        var menu = new ChatMenu($"{Config.ChatPrefix} Settings");
 
         menu.AddMenuOption($"VIP Tag: {(settings.TagEnabled ? "ON" : "OFF")}", (p, _) =>
         {
@@ -272,13 +302,14 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         if (Config.VoteKickEnabled)
             menu.AddMenuOption("Vote Kick player", (p, _) => OpenVoteKickMenu(p));
 
-        menu.Open(player);
+        menu.PostSelectAction = PostSelectAction.Close;
+        MenuManager.OpenChatMenu(player, menu);
     }
 
     private void OpenSmokeMenu(CCSPlayerController player)
     {
         var settings = SettingsOf(player);
-        var menu = new CenterHtmlMenu("Smoke Color", this);
+        var menu = new ChatMenu("Smoke Color");
 
         foreach (var key in Config.SmokeColors.Keys)
         {
@@ -294,7 +325,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         }
 
         menu.AddMenuOption("<< Back", (p, _) => OpenVipMenu(p));
-        menu.Open(player);
+        MenuManager.OpenChatMenu(player, menu);
     }
 
     private void OpenGunsMenu(CCSPlayerController player)
@@ -317,14 +348,14 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             return;
         }
 
-        var menu = new CenterHtmlMenu("Free Guns", this);
+        var menu = new ChatMenu("Free Guns");
         foreach (var gun in Config.Guns)
         {
             var g = gun;
             menu.AddMenuOption(g.Name, (p, _) => GiveGun(p, g.Weapon, g.Name));
         }
 
-        menu.Open(player);
+        MenuManager.OpenChatMenu(player, menu);
     }
 
     private void GiveGun(CCSPlayerController player, string weapon, string displayName)
@@ -381,7 +412,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             return;
         }
 
-        var menu = new CenterHtmlMenu("Vote Kick — select player", this);
+        var menu = new ChatMenu("Vote Kick — select player");
         var any = false;
 
         foreach (var p in Utilities.GetPlayers().OrderBy(x => x.PlayerName))
@@ -407,7 +438,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             return;
         }
 
-        menu.Open(starter);
+        MenuManager.OpenChatMenu(starter, menu);
     }
 
     private void StartVoteKick(CCSPlayerController starter, ulong targetSteam, string targetName)
