@@ -13,7 +13,7 @@ namespace YGuardVIP;
 public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 {
     public override string ModuleName => "YGuard VIP";
-    public override string ModuleVersion => "1.1.0";
+    public override string ModuleVersion => "1.1.1";
     public override string ModuleAuthor => "YGuard";
     public override string ModuleDescription => "Timed VIP DB, panel menu, guns, smoke, healthshot, votekick";
 
@@ -222,8 +222,19 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
     private void OpenPanel(CCSPlayerController player, CenterHtmlMenu menu)
     {
+        // Close after select — submenus must open on a deferred timer or they never appear
         menu.PostSelectAction = PostSelectAction.Close;
         MenuManager.OpenCenterHtmlMenu(this, player, menu);
+    }
+
+    private void DeferMenu(CCSPlayerController player, Action<CCSPlayerController> open)
+    {
+        var p = player;
+        AddTimer(0.08f, () =>
+        {
+            if (p.IsValid)
+                open(p);
+        });
     }
 
     #region Silent commands in chat
@@ -461,14 +472,14 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             _store.Save();
             ApplyTag(p);
             Msg(p, $"VIP Tag: {(settings.TagEnabled ? $"{ChatColors.Lime}ON" : $"{ChatColors.Red}OFF")}");
-            OpenVipMenu(p);
+            DeferMenu(p, OpenVipMenu);
         });
 
-        menu.AddMenuOption($"Smoke: {settings.SmokeColor}", (p, _) => OpenSmokeMenu(p));
-        menu.AddMenuOption("Free Guns", (p, _) => OpenGunsMenu(p));
+        menu.AddMenuOption($"Smoke: {settings.SmokeColor}", (p, _) => DeferMenu(p, OpenSmokeMenu));
+        menu.AddMenuOption("Free Guns", (p, _) => DeferMenu(p, OpenGunsMenu));
 
         if (Config.VoteKickEnabled)
-            menu.AddMenuOption("Vote Kick", (p, _) => OpenVoteKickMenu(p));
+            menu.AddMenuOption("Vote Kick", (p, _) => DeferMenu(p, OpenVoteKickMenu));
 
         OpenPanel(player, menu);
     }
@@ -487,11 +498,11 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
                 SettingsOf(p).SmokeColor = colorKey;
                 _store.Save();
                 Msg(p, $"Smoke color: {ChatColors.Lime}{colorKey}");
-                OpenVipMenu(p);
+                DeferMenu(p, OpenVipMenu);
             });
         }
 
-        menu.AddMenuOption("« Back", (p, _) => OpenVipMenu(p));
+        menu.AddMenuOption("« Back", (p, _) => DeferMenu(p, OpenVipMenu));
         OpenPanel(player, menu);
     }
 
@@ -522,7 +533,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             menu.AddMenuOption(g.Name, (p, _) => GiveGun(p, g.Weapon, g.Name));
         }
 
-        menu.AddMenuOption("« Back", (p, _) => OpenVipMenu(p));
+        menu.AddMenuOption("« Back", (p, _) => DeferMenu(p, OpenVipMenu));
         OpenPanel(player, menu);
     }
 
@@ -903,39 +914,25 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             var wantTag = IsVip(player) && settings.TagEnabled;
             var tag = Config.VipTagText;
 
-            if (!_originalClan.ContainsKey(player.Slot))
-                _originalClan[player.Slot] = player.Clan ?? "";
+            // Remember clean base name once (strip any existing VIP prefixes)
             if (!_originalName.ContainsKey(player.Slot))
-                _originalName[player.Slot] = player.PlayerName ?? "";
+                _originalName[player.Slot] = StripVipPrefixes(player.PlayerName ?? "Player", tag);
 
-            // Clan tag (scoreboard)
-            player.Clan = wantTag ? tag : _originalClan.GetValueOrDefault(player.Slot, "");
-            try
-            {
-                Utilities.SetStateChanged(player, "CCSPlayerController", "m_szClan");
-            }
-            catch
-            {
-                // some CSS builds dislike SetStateChanged — clan still set above
-            }
+            var baseName = StripVipPrefixes(_originalName[player.Slot], tag);
+            _originalName[player.Slot] = baseName;
 
-            // Name prefix so the tag is actually visible (CS2 often hides fancy clan glyphs)
-            var baseName = _originalName[player.Slot];
-            if (string.IsNullOrWhiteSpace(baseName))
-                baseName = player.PlayerName ?? "Player";
+            // Only ONE place for the tag: name prefix.
+            // Do NOT also put it in Clan — that made "VIP" appear twice.
+            if (!_originalClan.ContainsKey(player.Slot))
+                _originalClan[player.Slot] = StripVipPrefixes(player.Clan ?? "", tag);
 
-            // Strip previous prefix if re-applying
-            if (baseName.StartsWith(tag + " ", StringComparison.Ordinal))
-                baseName = baseName[(tag.Length + 1)..];
+            player.Clan = _originalClan.GetValueOrDefault(player.Slot, "");
 
             var newName = wantTag ? $"{tag} {baseName}" : baseName;
             if (!string.Equals(player.PlayerName, newName, StringComparison.Ordinal))
             {
                 player.PlayerName = newName;
-                try
-                {
-                    Utilities.SetStateChanged(player, "CBasePlayerController", "m_iszPlayerName");
-                }
+                try { Utilities.SetStateChanged(player, "CBasePlayerController", "m_iszPlayerName"); }
                 catch { /* ignore */ }
             }
         }
@@ -945,17 +942,47 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         }
     }
 
+    private static string StripVipPrefixes(string name, string tag)
+    {
+        if (string.IsNullOrEmpty(name))
+            return "Player";
+
+        var n = name.Trim();
+        for (var i = 0; i < 8; i++)
+        {
+            if (!string.IsNullOrEmpty(tag) && n.StartsWith(tag + " ", StringComparison.Ordinal))
+            {
+                n = n[(tag.Length + 1)..].TrimStart();
+                continue;
+            }
+
+            // also strip plain leftovers like "VIP " / "★VIP★ "
+            if (n.StartsWith("VIP ", StringComparison.OrdinalIgnoreCase))
+            {
+                n = n[4..].TrimStart();
+                continue;
+            }
+
+            break;
+        }
+
+        return string.IsNullOrWhiteSpace(n) ? "Player" : n;
+    }
+
     private void ClearTag(CCSPlayerController player)
     {
         try
         {
             if (!player.IsValid) return;
-            player.Clan = _originalClan.GetValueOrDefault(player.Slot, "");
-            var baseName = _originalName.GetValueOrDefault(player.Slot, player.PlayerName ?? "");
             var tag = Config.VipTagText;
-            if (baseName.StartsWith(tag + " ", StringComparison.Ordinal))
-                baseName = baseName[(tag.Length + 1)..];
+            var baseName = _originalName.TryGetValue(player.Slot, out var o)
+                ? StripVipPrefixes(o, tag)
+                : StripVipPrefixes(player.PlayerName ?? "Player", tag);
+            _originalName[player.Slot] = baseName;
             player.PlayerName = baseName;
+            player.Clan = _originalClan.GetValueOrDefault(player.Slot, "");
+            try { Utilities.SetStateChanged(player, "CBasePlayerController", "m_iszPlayerName"); }
+            catch { /* ignore */ }
         }
         catch { /* ignore */ }
     }
