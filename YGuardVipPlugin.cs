@@ -14,7 +14,7 @@ namespace YGuardVIP;
 public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 {
     public override string ModuleName => "YGuard VIP";
-    public override string ModuleVersion => "1.1.9";
+    public override string ModuleVersion => "1.2.0";
     public override string ModuleAuthor => "YGuard";
     public override string ModuleDescription => "Timed VIP DB, panel menu, guns, smoke, healthshot, votekick";
 
@@ -934,22 +934,26 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
         foreach (var p in Utilities.GetPlayers().OrderBy(x => x.PlayerName))
         {
-            if (!p.IsValid || p.IsBot || p.IsHLTV || p.SteamID == 0)
+            if (!IsPlayerOk(p))
                 continue;
             if (p.SteamID == starter.SteamID)
                 continue;
-            if (AdminManager.PlayerHasPermissions(p, Config.AdminPermission))
-                continue;
+            try
+            {
+                if (AdminManager.PlayerHasPermissions(p, Config.AdminPermission))
+                    continue;
+            }
+            catch { /* ignore */ }
 
             any = true;
-            var name = p.PlayerName;
+            var name = SafeName(p.PlayerName);
             var sid = p.SteamID;
             menu.AddMenuOption(name, (voter, _) =>
             {
                 var v = voter;
-                AddTimer(0.05f, () =>
+                AddTimer(0.1f, () =>
                 {
-                    if (v.IsValid)
+                    if (IsPlayerOk(v))
                         StartVoteKick(v, sid, name);
                 });
             });
@@ -968,7 +972,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     {
         try
         {
-            if (!starter.IsValid || !IsVip(starter) || _voteActive)
+            if (!IsPlayerOk(starter) || !IsVip(starter) || _voteActive)
                 return;
 
             var since = (DateTime.UtcNow - _lastVoteKickUtc).TotalSeconds;
@@ -978,14 +982,14 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
                 return;
             }
 
-            var target = Utilities.GetPlayers().FirstOrDefault(p => p.IsValid && p.SteamID == targetSteam);
+            var target = Utilities.GetPlayers().FirstOrDefault(p => IsPlayerOk(p) && p.SteamID == targetSteam);
             if (target == null)
             {
                 Msg(starter, $"{ChatColors.Red}Player left.");
                 return;
             }
 
-            targetName = target.PlayerName;
+            targetName = SafeName(target.PlayerName);
             _voteActive = true;
             _voteTargetSteam = targetSteam;
             _voteTargetName = targetName;
@@ -995,160 +999,163 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             _lastVoteKickUtc = DateTime.UtcNow;
 
             var needed = VotesNeeded();
-            Server.PrintToChatAll("====================================");
             Broadcast($"{ChatColors.Orange}VOTE KICK → {ChatColors.Red}{targetName}");
-            Broadcast($"{ChatColors.Grey}By {starter.PlayerName} · need {ChatColors.Lime}{needed} YES {ChatColors.Grey}· {Config.VoteKickDurationSeconds}s");
-            Broadcast($"{ChatColors.Lime}!yes {ChatColors.Grey}/ {ChatColors.Red}!no {ChatColors.Grey}or use the panel");
-            Server.PrintToChatAll("====================================");
+            Broadcast($"{ChatColors.Grey}By {SafeName(starter.PlayerName)} · need {ChatColors.Lime}{needed} YES {ChatColors.Grey}· {Config.VoteKickDurationSeconds}s");
+            Broadcast($"{ChatColors.Lime}Type !yes {ChatColors.Grey}or {ChatColors.Red}!no");
 
-            AddTimer(0.1f, () =>
-            {
-                if (!_voteActive) return;
-                foreach (var p in Utilities.GetPlayers())
-                {
-                    if (!p.IsValid || p.IsBot || p.IsHLTV || p.SteamID == 0)
-                        continue;
-                    if (p.SteamID == targetSteam)
-                        continue;
-                    OpenVoteBallot(p);
-                }
-            });
-
-            PushVoteHud();
+            // No CenterHtml ballots / no PrintToCenterHtml HUD — those crashed on vote
             _voteTimer?.Kill();
-            _voteTimer = AddTimer(Config.VoteKickDurationSeconds, () => FinishVoteKick());
-            _voteHudTimer?.Kill();
-            _voteHudTimer = AddTimer(1.0f, () =>
+            _voteTimer = AddTimer(Config.VoteKickDurationSeconds, () =>
             {
-                if (!_voteActive)
-                {
-                    _voteHudTimer?.Kill();
-                    _voteHudTimer = null;
-                    return;
-                }
-
-                PushVoteHud();
-            }, TimerFlags.REPEAT);
-
-            AddTimer(1.5f, () =>
-            {
-                if (_voteActive && _voteYes.Count >= VotesNeeded())
-                    FinishVoteKick();
+                try { FinishVoteKick(); }
+                catch (Exception ex) { Logger.LogError(ex, "Vote timer finish failed"); }
             });
+
+            _voteHudTimer?.Kill();
+            _voteHudTimer = null;
         }
         catch (Exception ex)
         {
             Logger.LogError(ex, "StartVoteKick failed");
-            _voteActive = false;
+            CancelVoteKick(silent: true);
             Msg(starter, $"{ChatColors.Red}Vote kick failed to start.");
-        }
-    }
-
-    private void OpenVoteBallot(CCSPlayerController voter)
-    {
-        try
-        {
-            if (!voter.IsValid || !_voteActive) return;
-
-            var menu = new CenterHtmlMenu($"Kick {_voteTargetName}?", this);
-            menu.AddMenuOption("YES — Kick", (p, _) => CastVote(p, yes: true));
-            menu.AddMenuOption("NO — Keep", (p, _) => CastVote(p, yes: false));
-            OpenPanel(voter, menu);
-            PanelHint(voter, $"Vote kick {_voteTargetName}: !yes / !no");
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "OpenVoteBallot failed");
-            PanelHint(voter, $"Vote kick {_voteTargetName}: !yes / !no");
         }
     }
 
     private void CastVote(CCSPlayerController player, bool yes)
     {
-        if (!_voteActive)
+        try
         {
-            Msg(player, $"{ChatColors.Red}No active vote kick.");
-            return;
-        }
+            if (!_voteActive)
+            {
+                Msg(player, $"{ChatColors.Red}No active vote kick.");
+                return;
+            }
 
-        if (player.SteamID == _voteTargetSteam)
+            if (!IsPlayerOk(player))
+                return;
+
+            if (player.SteamID == _voteTargetSteam)
+            {
+                Msg(player, $"{ChatColors.Red}You cannot vote on your own kick.");
+                return;
+            }
+
+            _voteYes.Remove(player.SteamID);
+            _voteNo.Remove(player.SteamID);
+            if (yes) _voteYes.Add(player.SteamID);
+            else _voteNo.Add(player.SteamID);
+
+            Msg(player, yes ? $"{ChatColors.Lime}Voted YES" : $"{ChatColors.Red}Voted NO");
+            Broadcast($"{ChatColors.Grey}{_voteTargetName}: {ChatColors.Lime}YES {_voteYes.Count}{ChatColors.Grey}/{VotesNeeded()} {ChatColors.Red}NO {_voteNo.Count}");
+
+            // Defer finish — finishing inside menu/chat callback crashes some CSS builds
+            if (_voteYes.Count >= VotesNeeded())
+            {
+                AddTimer(0.15f, () =>
+                {
+                    try { FinishVoteKick(); }
+                    catch (Exception ex) { Logger.LogError(ex, "Deferred FinishVoteKick failed"); }
+                });
+            }
+        }
+        catch (Exception ex)
         {
-            Msg(player, $"{ChatColors.Red}You cannot vote on your own kick.");
-            return;
+            Logger.LogError(ex, "CastVote failed");
         }
-
-        _voteYes.Remove(player.SteamID);
-        _voteNo.Remove(player.SteamID);
-        if (yes) _voteYes.Add(player.SteamID);
-        else _voteNo.Add(player.SteamID);
-
-        Msg(player, yes ? $"{ChatColors.Lime}Voted YES" : $"{ChatColors.Red}Voted NO");
-        Broadcast($"{ChatColors.Grey}{_voteTargetName}: {ChatColors.Lime}YES {_voteYes.Count}{ChatColors.Grey}/{VotesNeeded()} {ChatColors.Red}NO {_voteNo.Count}");
-        PushVoteHud();
-
-        if (_voteYes.Count >= VotesNeeded())
-            FinishVoteKick();
     }
 
     private int VotesNeeded()
     {
-        var voters = Utilities.GetPlayers().Count(p =>
-            p.IsValid && !p.IsBot && !p.IsHLTV && p.SteamID != 0 && p.SteamID != _voteTargetSteam);
-        if (voters < 1) voters = 1;
-        var needed = (int)Math.Ceiling(voters * Config.VoteKickRatio);
-        if (voters >= 2)
-            needed = Math.Max(2, needed);
-        return Math.Max(1, needed);
-    }
-
-    private void PushVoteHud()
-    {
-        if (!_voteActive) return;
-        var needed = VotesNeeded();
-        var line = $"VOTE KICK {_voteTargetName}  YES {_voteYes.Count}/{needed}  NO {_voteNo.Count}";
-        var html =
-            $"<font color='#ffaa00'><b>VOTE KICK</b></font><br>" +
-            $"<font color='#ff4444'>{_voteTargetName}</font><br>" +
-            $"<font color='#88ff88'>YES {_voteYes.Count}</font>/{needed} " +
-            $"<font color='#ff8888'>NO {_voteNo.Count}</font><br>" +
-            $"<font color='#cccccc'>!yes / !no</font>";
-
-        foreach (var p in Utilities.GetPlayers())
+        try
         {
-            if (!p.IsValid || p.IsBot || p.IsHLTV) continue;
-            try
-            {
-                p.PrintToCenter(line);
-                p.PrintToCenterHtml(html);
-            }
-            catch { /* ignore */ }
+            var voters = Utilities.GetPlayers().Count(p =>
+                IsPlayerOk(p) && p.SteamID != _voteTargetSteam);
+            if (voters < 1) voters = 1;
+            var needed = (int)Math.Ceiling(voters * Config.VoteKickRatio);
+            if (voters >= 2)
+                needed = Math.Max(2, needed);
+            return Math.Max(1, needed);
+        }
+        catch
+        {
+            return 2;
         }
     }
 
     private void FinishVoteKick()
     {
-        if (!_voteActive) return;
+        if (!_voteActive)
+            return;
 
-        _voteTimer?.Kill();
-        _voteTimer = null;
-        _voteHudTimer?.Kill();
-        _voteHudTimer = null;
-
-        var needed = VotesNeeded();
-        var yes = _voteYes.Count;
-        var passed = yes >= needed;
-
-        if (passed)
+        try
         {
-            Broadcast($"{ChatColors.Lime}Vote kick PASSED ({yes}/{needed}) — kicking {_voteTargetName}");
-            var target = Utilities.GetPlayers().FirstOrDefault(p => p.IsValid && p.SteamID == _voteTargetSteam);
-            if (target != null)
-                Server.ExecuteCommand($"kickid {target.UserId} Vote kicked");
+            _voteTimer?.Kill();
+            _voteTimer = null;
+            _voteHudTimer?.Kill();
+            _voteHudTimer = null;
+
+            var needed = VotesNeeded();
+            var yes = _voteYes.Count;
+            var passed = yes >= needed;
+            var targetSteam = _voteTargetSteam;
+            var targetName = _voteTargetName;
+
+            // Clear state BEFORE kick so re-entry is safe
+            _voteActive = false;
+            _voteYes.Clear();
+            _voteNo.Clear();
+            _voteTargetSteam = 0;
+            _voteTargetName = "";
+
+            if (passed)
+            {
+                Broadcast($"{ChatColors.Lime}Vote kick PASSED ({yes}/{needed}) — kicking {targetName}");
+                Server.NextFrame(() =>
+                {
+                    try
+                    {
+                        var target = Utilities.GetPlayers()
+                            .FirstOrDefault(p => IsPlayerOk(p) && p.SteamID == targetSteam);
+                        if (target == null) return;
+                        var uid = target.UserId;
+                        if (uid.HasValue)
+                            Server.ExecuteCommand($"kickid {uid.Value} Vote kicked");
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.LogError(ex, "Vote kick execute failed");
+                    }
+                });
+            }
+            else
+            {
+                Broadcast($"{ChatColors.Red}Vote kick FAILED ({yes}/{needed}) — {targetName} stays");
+            }
         }
-        else
+        catch (Exception ex)
         {
-            Broadcast($"{ChatColors.Red}Vote kick FAILED ({yes}/{needed}) — {_voteTargetName} stays");
+            Logger.LogError(ex, "FinishVoteKick failed");
+            _voteActive = false;
+            _voteYes.Clear();
+            _voteNo.Clear();
+            _voteTargetSteam = 0;
+            _voteTargetName = "";
         }
+    }
+
+    private void CancelVoteKick(bool silent)
+    {
+        try
+        {
+            _voteTimer?.Kill();
+            _voteTimer = null;
+            _voteHudTimer?.Kill();
+            _voteHudTimer = null;
+            if (_voteActive && !silent)
+                Broadcast($"{ChatColors.Grey}Vote kick cancelled.");
+        }
+        catch { /* ignore */ }
 
         _voteActive = false;
         _voteYes.Clear();
@@ -1157,19 +1164,16 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         _voteTargetName = "";
     }
 
-    private void CancelVoteKick(bool silent)
+    private static string SafeName(string? name)
     {
-        _voteTimer?.Kill();
-        _voteTimer = null;
-        _voteHudTimer?.Kill();
-        _voteHudTimer = null;
-        if (_voteActive && !silent)
-            Broadcast($"{ChatColors.Grey}Vote kick cancelled.");
-        _voteActive = false;
-        _voteYes.Clear();
-        _voteNo.Clear();
-        _voteTargetSteam = 0;
-        _voteTargetName = "";
+        if (string.IsNullOrWhiteSpace(name))
+            return "player";
+        // Strip chat color codes that can break PrintToChatAll
+        var n = name;
+        foreach (var c in new[] { '\x01', '\x02', '\x03', '\x04', '\x05', '\x06', '\x07', '\x08', '\x09', '\x0A', '\x0B', '\x0C' })
+            n = n.Replace(c.ToString(), "");
+        if (n.Length > 32) n = n[..32];
+        return n;
     }
 
     #endregion
