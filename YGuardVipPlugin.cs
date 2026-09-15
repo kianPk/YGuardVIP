@@ -14,7 +14,7 @@ namespace YGuardVIP;
 public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 {
     public override string ModuleName => "YGuard VIP";
-    public override string ModuleVersion => "1.1.6";
+    public override string ModuleVersion => "1.1.7";
     public override string ModuleAuthor => "YGuard";
     public override string ModuleDescription => "Timed VIP DB, panel menu, guns, smoke, healthshot, votekick";
 
@@ -314,14 +314,21 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             if (!_openMenus.TryGetValue(player.Slot, out var menu) || menu == null)
                 return false;
 
+            // Out of range (!9 on a 4-item panel, etc.) → just close the stuck panel
             if (oneBasedIndex < 1 || oneBasedIndex > menu.MenuOptions.Count)
-                return false;
+            {
+                ClearTrackedMenu(player);
+                PanelHint(player, "Menu closed");
+                return true;
+            }
 
             var option = menu.MenuOptions[oneBasedIndex - 1];
             if (option.Disabled)
-                return false;
+            {
+                ClearTrackedMenu(player);
+                return true;
+            }
 
-            // Snapshot callback then close panel so CenterHtml actually dismisses
             var onSelect = option.OnSelect;
             ClearTrackedMenu(player);
             onSelect?.Invoke(player, option);
@@ -330,6 +337,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         catch (Exception ex)
         {
             Logger.LogWarning(ex, "TrySelectTrackedMenu failed");
+            try { ClearTrackedMenu(player); } catch { /* ignore */ }
             return false;
         }
     }
@@ -786,32 +794,29 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     }
 
     private void OpenSmokeMenuChatFallback(CCSPlayerController player)
-    {
-        var settings = SettingsOf(player);
-        var menu = new ChatMenu("Smoke Color");
-        foreach (var key in Config.SmokeColors.Keys)
-        {
-            var colorKey = key;
-            menu.AddMenuOption(colorKey, (p, _) =>
-            {
-                SettingsOf(p).SmokeColor = colorKey;
-                _store.Save();
-                PanelHint(p, $"Smoke: {colorKey}");
-            });
-        }
-
-        OpenChatPanel(player, menu);
-    }
+        => OpenSmokeMenu(player);
 
     private void OpenSmokeMenu(CCSPlayerController player)
-    {
-        // ChatMenu handles 9 options reliably; CenterHtml often breaks on slot 9
-        var settings = SettingsOf(player);
-        var menu = new ChatMenu("Smoke Color");
+        => OpenSmokeMenuPage(player, page: 0);
 
-        foreach (var key in Config.SmokeColors.Keys)
+    /// <summary>
+    /// CenterHtml panel for smoke — max ~7 options per page so !9 never maps to a broken slot.
+    /// </summary>
+    private void OpenSmokeMenuPage(CCSPlayerController player, int page)
+    {
+        var settings = SettingsOf(player);
+        var keys = Config.SmokeColors.Keys.ToList();
+        const int pageSize = 5; // + More/Back rows keep total ≤ 7
+
+        var start = page * pageSize;
+        if (start >= keys.Count)
+            start = 0;
+
+        var menu = new CenterHtmlMenu($"Smoke Color ({settings.SmokeColor})", this);
+
+        for (var i = start; i < keys.Count && i < start + pageSize; i++)
         {
-            var colorKey = key;
+            var colorKey = keys[i];
             var mark = settings.SmokeColor.Equals(colorKey, StringComparison.OrdinalIgnoreCase) ? " *" : "";
             menu.AddMenuOption($"{colorKey}{mark}", (p, _) =>
             {
@@ -822,9 +827,18 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             });
         }
 
-        menu.AddMenuOption("« Back", (p, _) => DeferMenu(p, OpenVipMenu));
-        OpenChatPanel(player, menu);
-        Msg(player, $"{ChatColors.Lime}Smoke menu — type number (hidden)");
+        if (start + pageSize < keys.Count)
+        {
+            var nextPage = page + 1;
+            menu.AddMenuOption("More colors »", (p, _) => DeferMenu(p, pl => OpenSmokeMenuPage(pl, nextPage)));
+        }
+        else if (page > 0)
+        {
+            menu.AddMenuOption("« Prev colors", (p, _) => DeferMenu(p, pl => OpenSmokeMenuPage(pl, page - 1)));
+        }
+
+        menu.AddMenuOption("« Back to VIP", (p, _) => DeferMenu(p, OpenVipMenu));
+        OpenPanel(player, menu);
     }
 
     private void OpenGunsMenu(CCSPlayerController player)
