@@ -61,13 +61,13 @@ public class YGuardVipConfig : BasePluginConfig
     public Dictionary<string, int[]> SmokeColors { get; set; } = new()
     {
         ["off"] = [255, 255, 255],
-        ["red"] = [255, 40, 40],
-        ["green"] = [40, 255, 80],
-        ["blue"] = [40, 120, 255],
-        ["purple"] = [180, 40, 255],
-        ["orange"] = [255, 140, 40],
-        ["pink"] = [255, 80, 180],
-        ["cyan"] = [40, 220, 255]
+        ["red"] = [255, 20, 20],
+        ["green"] = [20, 255, 40],
+        ["blue"] = [10, 60, 255],
+        ["purple"] = [200, 20, 255],
+        ["orange"] = [255, 90, 0],
+        ["pink"] = [255, 40, 160],
+        ["cyan"] = [0, 255, 255]
     };
 }
 

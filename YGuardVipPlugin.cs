@@ -14,7 +14,7 @@ namespace YGuardVIP;
 public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 {
     public override string ModuleName => "YGuard VIP";
-    public override string ModuleVersion => "1.1.7";
+    public override string ModuleVersion => "1.1.8";
     public override string ModuleAuthor => "YGuard";
     public override string ModuleDescription => "Timed VIP DB, panel menu, guns, smoke, healthshot, votekick";
 
@@ -42,7 +42,14 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     private CounterStrikeSharp.API.Modules.Timers.Timer? _voteTimer;
     private CounterStrikeSharp.API.Modules.Timers.Timer? _voteHudTimer;
 
-    public void OnConfigParsed(YGuardVipConfig config) => Config = config;
+    public void OnConfigParsed(YGuardVipConfig config)
+    {
+        Config = config;
+        // Force vivid smoke tones (old configs kept pale RGB)
+        Config.SmokeColors["blue"] = [10, 60, 255];
+        Config.SmokeColors["orange"] = [255, 90, 0];
+        Config.SmokeColors["cyan"] = [0, 255, 255];
+    }
 
     private string DataDirectory
     {
