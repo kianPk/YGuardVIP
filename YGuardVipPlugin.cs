@@ -3,6 +3,7 @@ using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Core.Attributes.Registration;
 using CounterStrikeSharp.API.Modules.Admin;
 using CounterStrikeSharp.API.Modules.Commands;
+using CounterStrikeSharp.API.Modules.Events;
 using CounterStrikeSharp.API.Modules.Menu;
 using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
@@ -13,7 +14,7 @@ namespace YGuardVIP;
 public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 {
     public override string ModuleName => "YGuard VIP";
-    public override string ModuleVersion => "1.1.4";
+    public override string ModuleVersion => "1.1.5";
     public override string ModuleAuthor => "YGuard";
     public override string ModuleDescription => "Timed VIP DB, panel menu, guns, smoke, healthshot, votekick";
 
@@ -26,6 +27,9 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     private readonly Dictionary<int, string> _originalName = [];
     /// <summary>Active VIP menus per player slot — used to silence !1/!3 chat picks.</summary>
     private readonly Dictionary<int, BaseMenu> _openMenus = [];
+    /// <summary>Keep silencing number picks for a while after opening a panel.</summary>
+    private readonly Dictionary<int, DateTime> _menuSilentUntil = [];
+    private readonly HashSet<ulong> _silentChatHandled = [];
     private int _roundNumber;
     private bool _resetRoundOnNextStart;
 
@@ -120,6 +124,9 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
         AddCommandListener("say", HideVipCommandChat, HookMode.Pre);
         AddCommandListener("say_team", HideVipCommandChat, HookMode.Pre);
+
+        // say Handled alone does NOT hide chat in CS2 — must DontBroadcast player_chat
+        RegisterEventHandler<EventPlayerChat>(OnPlayerChatHide, HookMode.Pre);
 
         // Expire VIPs + refresh clan tags
         AddTimer(30.0f, () =>
@@ -282,10 +289,21 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     }
 
     private void TrackMenu(CCSPlayerController player, BaseMenu menu)
-        => _openMenus[player.Slot] = menu;
+    {
+        _openMenus[player.Slot] = menu;
+        _menuSilentUntil[player.Slot] = DateTime.UtcNow.AddSeconds(90);
+    }
 
     private void ClearTrackedMenu(CCSPlayerController player)
-        => _openMenus.Remove(player.Slot);
+    {
+        _openMenus.Remove(player.Slot);
+        // keep silence window a bit so trailing number presses stay hidden
+        _menuSilentUntil[player.Slot] = DateTime.UtcNow.AddSeconds(8);
+    }
+
+    private bool IsMenuSilenceActive(CCSPlayerController player)
+        => _openMenus.ContainsKey(player.Slot)
+           || (_menuSilentUntil.TryGetValue(player.Slot, out var until) && until > DateTime.UtcNow);
 
     /// <summary>
     /// Handle menu number picks ourselves and hide them from public chat
@@ -305,7 +323,6 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             if (option.Disabled)
                 return false;
 
-            // Close tracking first so submenu DeferOpen isn't fighting the old menu
             if (menu.PostSelectAction == PostSelectAction.Close)
                 ClearTrackedMenu(player);
 
@@ -317,6 +334,93 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             Logger.LogWarning(ex, "TrySelectTrackedMenu failed");
             return false;
         }
+    }
+
+    private static string NormalizeChatRaw(string? raw)
+    {
+        raw = raw?.Trim() ?? "";
+        if (raw.Length == 0) return "";
+        if (raw.StartsWith('"') && raw.EndsWith('"') && raw.Length >= 2)
+            raw = raw[1..^1].Trim();
+        return raw;
+    }
+
+    /// <summary>True if this chat line is a VIP cmd or menu pick that must stay private.</summary>
+    private bool IsSilentVipText(CCSPlayerController player, string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return false;
+
+        // Menu picks while panel open / recently open: 3, !3, /3, .9
+        var maybeNum = raw.TrimStart('!', '/', '.').Trim();
+        if (int.TryParse(maybeNum, out var choice) && choice >= 1 && choice <= 9
+            && raw.Length <= 4
+            && (char.IsDigit(raw[0]) || raw[0] is '!' or '/' or '.')
+            && IsMenuSilenceActive(player))
+            return true;
+
+        if (!(raw.StartsWith('!') || raw.StartsWith('/') || raw.StartsWith('.')))
+            return false;
+
+        var key = raw.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries)[0]
+            .ToLowerInvariant().TrimStart('!', '/', '.');
+
+        return key is "vip" or "css_vip" or "g" or "guns" or "css_g"
+            or "votekick" or "vk" or "css_votekick" or "css_vk"
+            or "yes" or "css_yes" or "no" or "css_no"
+            or "1" or "2" or "3" or "4" or "5" or "6" or "7" or "8" or "9";
+    }
+
+    /// <summary>Run VIP/menu action for silent chat. Returns true if consumed.</summary>
+    private bool TryHandleSilentVipText(CCSPlayerController player, string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return false;
+
+        var maybeNum = raw.TrimStart('!', '/', '.').Trim();
+        if (int.TryParse(maybeNum, out var choice) && choice >= 1 && choice <= 9
+            && raw.Length <= 4
+            && (char.IsDigit(raw[0]) || raw[0] is '!' or '/' or '.'))
+        {
+            if (TrySelectTrackedMenu(player, choice))
+                return true;
+            // Even if select failed, still silence while panel silence window is active
+            if (IsMenuSilenceActive(player))
+                return true;
+        }
+
+        if (!(raw.StartsWith('!') || raw.StartsWith('/') || raw.StartsWith('.')))
+            return false;
+
+        var key = raw.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries)[0]
+            .ToLowerInvariant().TrimStart('!', '/', '.');
+
+        switch (key)
+        {
+            case "vip":
+            case "css_vip":
+                RunVip(player);
+                return true;
+            case "g":
+            case "guns":
+            case "css_g":
+                RunGuns(player);
+                return true;
+            case "votekick":
+            case "vk":
+            case "css_votekick":
+            case "css_vk":
+                RunVoteKick(player);
+                return true;
+            case "yes":
+            case "css_yes":
+                CastVote(player, yes: true);
+                return true;
+            case "no":
+            case "css_no":
+                CastVote(player, yes: false);
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>Open menu next tick — opening during say Pre often fails silently.</summary>
@@ -356,55 +460,14 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             if (player == null || !player.IsValid)
                 return HookResult.Continue;
 
-            var raw = info.ArgString?.Trim() ?? "";
-            if (raw.Length == 0)
+            var raw = NormalizeChatRaw(info.ArgString);
+            if (!TryHandleSilentVipText(player, raw))
                 return HookResult.Continue;
 
-            if (raw.StartsWith('"') && raw.EndsWith('"') && raw.Length >= 2)
-                raw = raw[1..^1].Trim();
-
-            // Menu picks: "3", "!3", "/3", ".9" — run select ourselves, hide from chat
-            var maybeNum = raw.TrimStart('!', '/', '.').Trim();
-            if (int.TryParse(maybeNum, out var choice) && choice >= 1 && choice <= 9
-                && raw.Length <= 4
-                && (char.IsDigit(raw[0]) || raw.StartsWith('!') || raw.StartsWith('/') || raw.StartsWith('.')))
-            {
-                if (TrySelectTrackedMenu(player, choice))
-                    return HookResult.Handled;
-            }
-
-            if (!(raw.StartsWith('!') || raw.StartsWith('/') || raw.StartsWith('.')))
-                return HookResult.Continue;
-
-            var parts = raw.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-            var key = parts[0].ToLowerInvariant().TrimStart('!', '/', '.');
-
-            switch (key)
-            {
-                case "vip":
-                case "css_vip":
-                    RunVip(player);
-                    return HookResult.Handled;
-                case "g":
-                case "guns":
-                case "css_g":
-                    RunGuns(player);
-                    return HookResult.Handled;
-                case "votekick":
-                case "vk":
-                case "css_votekick":
-                case "css_vk":
-                    RunVoteKick(player);
-                    return HookResult.Handled;
-                case "yes":
-                case "css_yes":
-                    CastVote(player, yes: true);
-                    return HookResult.Handled;
-                case "no":
-                case "css_no":
-                    CastVote(player, yes: false);
-                    return HookResult.Handled;
-            }
+            // Mark so EventPlayerChat doesn't double-run the action
+            _silentChatHandled.Add(player.SteamID);
+            AddTimer(0.05f, () => _silentChatHandled.Remove(player.SteamID));
+            return HookResult.Handled;
         }
         catch (Exception ex)
         {
@@ -412,6 +475,42 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         }
 
         return HookResult.Continue;
+    }
+
+    /// <summary>
+    /// CS2 still broadcasts chat even when say returns Handled.
+    /// DontBroadcast on player_chat is what actually hides it from others.
+    /// </summary>
+    private HookResult OnPlayerChatHide(EventPlayerChat @event, GameEventInfo info)
+    {
+        try
+        {
+            var raw = NormalizeChatRaw(@event.Text);
+            if (string.IsNullOrEmpty(raw))
+                return HookResult.Continue;
+
+            var player = Utilities.GetPlayers()
+                .FirstOrDefault(p => p.IsValid && p.UserId == @event.Userid);
+
+            if (player == null || !player.IsValid)
+                return HookResult.Continue;
+
+            if (!IsSilentVipText(player, raw))
+                return HookResult.Continue;
+
+            info.DontBroadcast = true;
+
+            // If say listener didn't run/handle (some paths only fire player_chat), do action here
+            if (!_silentChatHandled.Contains(player.SteamID))
+                TryHandleSilentVipText(player, raw);
+
+            return HookResult.Continue;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "OnPlayerChatHide failed");
+            return HookResult.Continue;
+        }
     }
 
     private void RunVip(CCSPlayerController player)
@@ -1254,6 +1353,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         _originalClan.Remove(playerSlot);
         _originalName.Remove(playerSlot);
         _openMenus.Remove(playerSlot);
+        _menuSilentUntil.Remove(playerSlot);
     }
 
     #endregion
