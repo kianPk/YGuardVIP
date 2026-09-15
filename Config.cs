@@ -14,9 +14,6 @@ public class YGuardVipConfig : BasePluginConfig
     [JsonPropertyName("ChatPrefix")]
     public string ChatPrefix { get; set; } = " {green}[YGuard VIP]{default}";
 
-    [JsonPropertyName("VipChatColor")]
-    public string VipChatColor { get; set; } = "gold";
-
     [JsonPropertyName("VipTagText")]
     public string VipTagText { get; set; } = "★VIP";
 
@@ -32,8 +29,21 @@ public class YGuardVipConfig : BasePluginConfig
     [JsonPropertyName("GunsOncePerRound")]
     public bool GunsOncePerRound { get; set; } = true;
 
-    [JsonPropertyName("MinPlayersAliveForGuns")]
-    public int MinPlayersAliveForGuns { get; set; } = 1;
+    /// <summary>Round number from which free guns &amp; healthshot are allowed (1 = blocked on round 1).</summary>
+    [JsonPropertyName("MinRoundForGunsAndHealthshot")]
+    public int MinRoundForGunsAndHealthshot { get; set; } = 2;
+
+    [JsonPropertyName("VoteKickEnabled")]
+    public bool VoteKickEnabled { get; set; } = true;
+
+    [JsonPropertyName("VoteKickRatio")]
+    public float VoteKickRatio { get; set; } = 0.6f;
+
+    [JsonPropertyName("VoteKickDurationSeconds")]
+    public int VoteKickDurationSeconds { get; set; } = 30;
+
+    [JsonPropertyName("VoteKickCooldownSeconds")]
+    public int VoteKickCooldownSeconds { get; set; } = 120;
 
     [JsonPropertyName("Guns")]
     public List<GunOption> Guns { get; set; } =
