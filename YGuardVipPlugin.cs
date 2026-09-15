@@ -14,7 +14,7 @@ namespace YGuardVIP;
 public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 {
     public override string ModuleName => "YGuard VIP";
-    public override string ModuleVersion => "1.1.8";
+    public override string ModuleVersion => "1.1.9";
     public override string ModuleAuthor => "YGuard";
     public override string ModuleDescription => "Timed VIP DB, panel menu, guns, smoke, healthshot, votekick";
 
@@ -25,6 +25,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     private readonly HashSet<int> _usedGunsThisRound = [];
     private readonly Dictionary<int, string> _originalClan = [];
     private readonly Dictionary<int, string> _originalName = [];
+    private readonly HashSet<int> _tagAppliedSlots = [];
     /// <summary>Active VIP menus per player slot — used to silence !1/!3 chat picks.</summary>
     private readonly Dictionary<int, BaseMenu> _openMenus = [];
     /// <summary>Keep silencing number picks for a while after opening a panel.</summary>
@@ -135,16 +136,11 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         // say Handled alone does NOT hide chat in CS2 — must DontBroadcast player_chat
         RegisterEventHandler<EventPlayerChat>(OnPlayerChatHide, HookMode.Pre);
 
-        // Expire VIPs + refresh clan tags
-        AddTimer(30.0f, () =>
+        // Expire VIPs only — do NOT re-ApplyTag here (PlayerName churn crashes CS2)
+        AddTimer(60.0f, () =>
         {
-            ProcessExpirations();
-            foreach (var p in Utilities.GetPlayers())
-            {
-                if (!p.IsValid || p.IsBot) continue;
-                SyncVipPermission(p);
-                if (IsVip(p)) ApplyTag(p);
-            }
+            try { ProcessExpirations(); }
+            catch (Exception ex) { Logger.LogWarning(ex, "ProcessExpirations timer failed"); }
         }, TimerFlags.REPEAT);
 
         Logger.LogInformation("YGuard VIP {Version} loaded — DB: {Path}", ModuleVersion,
@@ -1201,11 +1197,13 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
         foreach (var p in Utilities.GetPlayers())
         {
-            if (!IsVip(p)) continue;
-            ApplyTag(p);
+            if (!IsPlayerOk(p) || !IsVip(p)) continue;
+            // Only (re)apply if not yet tagged this session — avoids name churn crashes
+            if (!_tagAppliedSlots.Contains(p.Slot))
+                ApplyTag(p);
             if (BenefitsAllowed() && p.PawnIsAlive)
                 EnforceOneHealthshot(p, giveIfMissing: true);
-            else
+            else if (p.PawnIsAlive)
                 EnforceOneHealthshot(p, giveIfMissing: false);
         }
 
@@ -1246,11 +1244,28 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         return HookResult.Continue;
     }
 
+    private static bool IsPlayerOk(CCSPlayerController? player)
+    {
+        try
+        {
+            return player != null
+                   && player.IsValid
+                   && !player.IsBot
+                   && !player.IsHLTV
+                   && player.Connected == PlayerConnectedState.PlayerConnected
+                   && player.SteamID != 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private void ApplyTag(CCSPlayerController player)
     {
         try
         {
-            if (!player.IsValid) return;
+            if (!IsPlayerOk(player)) return;
 
             var settings = SettingsOf(player);
             var wantTag = IsVip(player) && settings.TagEnabled;
@@ -1259,20 +1274,29 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             RememberBaseName(player, tag);
 
             if (!_originalName.TryGetValue(player.Slot, out var baseName) || IsPlaceholderName(baseName))
-                return; // wait until real Steam name is known — avoids "ⱽᴵᴾ✶ Player"
+                return;
 
             if (!_originalClan.ContainsKey(player.Slot))
                 _originalClan[player.Slot] = StripVipPrefixes(player.Clan ?? "", tag);
 
-            // Name prefix only (no clan VIP — avoids double tag)
+            // Name prefix once per connect — no SetStateChanged (crashes), no clan VIP (double tag)
             player.Clan = _originalClan.GetValueOrDefault(player.Slot, "");
 
-            var newName = wantTag ? $"{tag} {baseName}" : baseName;
-            if (!string.Equals(player.PlayerName, newName, StringComparison.Ordinal))
+            if (wantTag)
             {
-                player.PlayerName = newName;
-                try { Utilities.SetStateChanged(player, "CBasePlayerController", "m_iszPlayerName"); }
-                catch { /* ignore */ }
+                if (!_tagAppliedSlots.Contains(player.Slot))
+                {
+                    var newName = $"{tag} {baseName}";
+                    if (!string.Equals(player.PlayerName, newName, StringComparison.Ordinal))
+                        player.PlayerName = newName;
+                    _tagAppliedSlots.Add(player.Slot);
+                }
+            }
+            else if (_tagAppliedSlots.Contains(player.Slot)
+                     || (player.PlayerName?.StartsWith(tag + " ", StringComparison.Ordinal) ?? false))
+            {
+                player.PlayerName = baseName;
+                _tagAppliedSlots.Remove(player.Slot);
             }
         }
         catch (Exception ex)
@@ -1283,12 +1307,16 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
     private void RememberBaseName(CCSPlayerController player, string tag)
     {
-        var cleaned = StripVipPrefixes(player.PlayerName ?? "", tag);
-        if (IsPlaceholderName(cleaned))
-            return;
+        try
+        {
+            var cleaned = StripVipPrefixes(player.PlayerName ?? "", tag);
+            if (IsPlaceholderName(cleaned))
+                return;
 
-        if (!_originalName.TryGetValue(player.Slot, out var existing) || IsPlaceholderName(existing))
-            _originalName[player.Slot] = cleaned;
+            if (!_originalName.TryGetValue(player.Slot, out var existing) || IsPlaceholderName(existing))
+                _originalName[player.Slot] = cleaned;
+        }
+        catch { /* ignore */ }
     }
 
     private static bool IsPlaceholderName(string? name)
@@ -1326,7 +1354,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     {
         try
         {
-            if (!player.IsValid) return;
+            if (!IsPlayerOk(player)) return;
             var tag = Config.VipTagText;
             RememberBaseName(player, tag);
             var baseName = _originalName.TryGetValue(player.Slot, out var o) && !IsPlaceholderName(o)
@@ -1338,8 +1366,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             _originalName[player.Slot] = baseName;
             player.PlayerName = baseName;
             player.Clan = _originalClan.GetValueOrDefault(player.Slot, "");
-            try { Utilities.SetStateChanged(player, "CBasePlayerController", "m_iszPlayerName"); }
-            catch { /* ignore */ }
+            _tagAppliedSlots.Remove(player.Slot);
         }
         catch { /* ignore */ }
     }
@@ -1402,6 +1429,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         _originalName.Remove(playerSlot);
         _openMenus.Remove(playerSlot);
         _menuSilentUntil.Remove(playerSlot);
+        _tagAppliedSlots.Remove(playerSlot);
     }
 
     #endregion
@@ -1410,45 +1438,46 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
     private void OnEntitySpawned(CEntityInstance entity)
     {
-        if (!Config.EnableSmokeColor)
-            return;
-        if (entity.DesignerName != "smokegrenade_projectile")
-            return;
-
-        var handle = entity.Handle;
-        // Apply on multiple frames — color can reset if set only once at spawn
-        void Apply()
+        try
         {
-            try
+            if (!Config.EnableSmokeColor)
+                return;
+            if (!entity.IsValid || entity.DesignerName != "smokegrenade_projectile")
+                return;
+
+            var handle = entity.Handle;
+            Server.NextFrame(() =>
             {
-                var smoke = new CSmokeGrenadeProjectile(handle);
-                if (!smoke.IsValid) return;
+                try
+                {
+                    var smoke = new CSmokeGrenadeProjectile(handle);
+                    if (!smoke.IsValid) return;
 
-                var thrower = ResolveSmokeThrower(smoke);
-                if (thrower == null || !IsVip(thrower))
-                    return;
+                    var thrower = ResolveSmokeThrower(smoke);
+                    if (thrower == null || !IsVip(thrower))
+                        return;
 
-                var settings = SettingsOf(thrower);
-                if (settings.SmokeColor.Equals("off", StringComparison.OrdinalIgnoreCase))
-                    return;
+                    var settings = SettingsOf(thrower);
+                    if (settings.SmokeColor.Equals("off", StringComparison.OrdinalIgnoreCase))
+                        return;
 
-                if (!TryGetSmokeRgb(settings.SmokeColor, out var r, out var g, out var b))
-                    return;
+                    if (!TryGetSmokeRgb(settings.SmokeColor, out var r, out var g, out var b))
+                        return;
 
-                smoke.SmokeColor.X = r;
-                smoke.SmokeColor.Y = g;
-                smoke.SmokeColor.Z = b;
-            }
-            catch (Exception ex)
-            {
-                Logger.LogWarning(ex, "Smoke color failed");
-            }
+                    smoke.SmokeColor.X = r;
+                    smoke.SmokeColor.Y = g;
+                    smoke.SmokeColor.Z = b;
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning(ex, "Smoke color failed");
+                }
+            });
         }
-
-        Server.NextFrame(Apply);
-        AddTimer(0.05f, Apply);
-        AddTimer(0.25f, Apply);
-        AddTimer(0.75f, Apply);
+        catch
+        {
+            // never let entity spawn listener crash the server
+        }
     }
 
     private static CCSPlayerController? ResolveSmokeThrower(CSmokeGrenadeProjectile smoke)
