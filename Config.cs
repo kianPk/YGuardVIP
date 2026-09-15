@@ -26,6 +26,9 @@ public class YGuardVipConfig : BasePluginConfig
     [JsonPropertyName("DefaultSmokeColor")]
     public string DefaultSmokeColor { get; set; } = "red";
 
+    [JsonPropertyName("EnableSmokeColor")]
+    public bool EnableSmokeColor { get; set; } = true;
+
     [JsonPropertyName("GunsOncePerRound")]
     public bool GunsOncePerRound { get; set; } = true;
 

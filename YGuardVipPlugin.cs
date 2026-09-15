@@ -3,7 +3,6 @@ using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Core.Attributes.Registration;
 using CounterStrikeSharp.API.Modules.Admin;
 using CounterStrikeSharp.API.Modules.Commands;
-using CounterStrikeSharp.API.Modules.Entities;
 using CounterStrikeSharp.API.Modules.Menu;
 using CounterStrikeSharp.API.Modules.Utils;
 using Microsoft.Extensions.Logging;
@@ -13,9 +12,9 @@ namespace YGuardVIP;
 public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 {
     public override string ModuleName => "YGuard VIP";
-    public override string ModuleVersion => "1.0.0";
+    public override string ModuleVersion => "1.0.1";
     public override string ModuleAuthor => "YGuard";
-    public override string ModuleDescription => "VIP settings, free guns, colored smoke, healthshot, chat color";
+    public override string ModuleDescription => "VIP settings, free guns, colored smoke, healthshot";
 
     public YGuardVipConfig Config { get; set; } = new();
 
@@ -37,15 +36,15 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         RegisterEventHandler<EventRoundStart>(OnRoundStart);
         RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn);
 
-        AddCommandListener("say", OnSay, HookMode.Pre);
-        AddCommandListener("say_team", OnSayTeam, HookMode.Pre);
+        // NOTE: say/say_team Pre hooks removed in 1.0.1 — they caused server crashes.
+        // VIP is shown via clan tag; chat color can return later with a safer method.
 
-        Logger.LogInformation("YGuard VIP loaded");
+        Logger.LogInformation("YGuard VIP {Version} loaded", ModuleVersion);
     }
 
     public override void Unload(bool hotReload)
     {
-        _store.Save();
+        try { _store.Save(); } catch { /* ignore */ }
     }
 
     private bool IsVip(CCSPlayerController? player)
@@ -53,9 +52,15 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         if (player == null || !player.IsValid || player.IsBot || player.IsHLTV)
             return false;
 
-        return AdminManager.PlayerHasPermissions(player, Config.VipPermission)
-               || AdminManager.PlayerHasPermissions(player, "@css/vip")
-               || AdminManager.PlayerHasPermissions(player, "@css/root");
+        try
+        {
+            return AdminManager.PlayerHasPermissions(player, Config.VipPermission)
+                   || AdminManager.PlayerHasPermissions(player, "@css/vip");
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private PlayerVipSettings SettingsOf(CCSPlayerController player)
@@ -63,12 +68,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
     private void Msg(CCSPlayerController? player, string message)
     {
-        player?.PrintToChat($"{Config.ChatPrefix} {message}");
-    }
-
-    private void Broadcast(string message)
-    {
-        Server.PrintToChatAll($"{Config.ChatPrefix} {message}");
+        try { player?.PrintToChat($"{Config.ChatPrefix} {message}"); } catch { /* ignore */ }
     }
 
     #region Commands
@@ -105,7 +105,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         OpenGunsMenu(player);
     }
 
-    [ConsoleCommand("css_addvipflag", "Grant @yguard/vip to a SteamID64 (temporary until admins.json save)")]
+    [ConsoleCommand("css_addvipflag", "Grant @yguard/vip to an online SteamID64")]
     [RequiresPermissions("@css/root")]
     [CommandHelper(minArgs: 1, usage: "<steamid64>", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
     public void CmdAddVipFlag(CCSPlayerController? player, CommandInfo info)
@@ -116,20 +116,17 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             return;
         }
 
-        // Runtime grant for currently connected player; also document admins.json
         var target = Utilities.GetPlayers().FirstOrDefault(p => p.IsValid && p.SteamID == steamId);
         if (target != null)
         {
             AdminManager.AddPlayerPermissions(target, Config.VipPermission);
             ApplyTag(target);
-            GiveExactOneHealthshot(target);
             Msg(target, $"{ChatColors.Lime}VIP enabled.");
             info.ReplyToCommand($"Granted {Config.VipPermission} to online player {steamId}");
         }
         else
         {
-            info.ReplyToCommand($"Player {steamId} is offline. Add permission in admins.json / SimpleAdmin:");
-            info.ReplyToCommand($"  \"{steamId}\": {{ \"identity\": \"{steamId}\", \"flags\": [\"{Config.VipPermission}\"] }}");
+            info.ReplyToCommand($"Player {steamId} offline. Add in admins.json / SimpleAdmin: flags [\"{Config.VipPermission}\"]");
         }
     }
 
@@ -140,7 +137,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     private void OpenVipMenu(CCSPlayerController player)
     {
         var settings = SettingsOf(player);
-        var menu = new CenterHtmlMenu($"{Config.ChatPrefix} Settings", this);
+        var menu = new CenterHtmlMenu("YGuard VIP Settings", this);
 
         menu.AddMenuOption($"VIP Tag: {(settings.TagEnabled ? "ON" : "OFF")}", (p, _) =>
         {
@@ -151,16 +148,8 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             OpenVipMenu(p);
         });
 
-        menu.AddMenuOption($"Smoke Color: {settings.SmokeColor}", (p, _) =>
-        {
-            OpenSmokeMenu(p);
-        });
-
-        menu.AddMenuOption("Free Guns (/g)", (p, _) =>
-        {
-            OpenGunsMenu(p);
-        });
-
+        menu.AddMenuOption($"Smoke Color: {settings.SmokeColor}", (p, _) => OpenSmokeMenu(p));
+        menu.AddMenuOption("Free Guns (/g)", (p, _) => OpenGunsMenu(p));
         menu.Open(player);
     }
 
@@ -172,17 +161,17 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         foreach (var key in Config.SmokeColors.Keys)
         {
             var colorKey = key;
-            var mark = settings.SmokeColor.Equals(colorKey, StringComparison.OrdinalIgnoreCase) ? " ✓" : "";
+            var mark = settings.SmokeColor.Equals(colorKey, StringComparison.OrdinalIgnoreCase) ? " *" : "";
             menu.AddMenuOption($"{colorKey}{mark}", (p, _) =>
             {
                 SettingsOf(p).SmokeColor = colorKey;
                 _store.Save();
-                Msg(p, $"Smoke color set to {ChatColors.Lime}{colorKey}");
+                Msg(p, $"Smoke color: {ChatColors.Lime}{colorKey}");
                 OpenVipMenu(p);
             });
         }
 
-        menu.AddMenuOption("← Back", (p, _) => OpenVipMenu(p));
+        menu.AddMenuOption("<< Back", (p, _) => OpenVipMenu(p));
         menu.Open(player);
     }
 
@@ -196,7 +185,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
         if (Config.GunsOncePerRound && _usedGunsThisRound.Contains(player.Slot))
         {
-            Msg(player, $"{ChatColors.Red}You already took a free gun this round.");
+            Msg(player, $"{ChatColors.Red}Already used free gun this round.");
             return;
         }
 
@@ -204,10 +193,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         foreach (var gun in Config.Guns)
         {
             var g = gun;
-            menu.AddMenuOption(g.Name, (p, _) =>
-            {
-                GiveGun(p, g.Weapon, g.Name);
-            });
+            menu.AddMenuOption(g.Name, (p, _) => GiveGun(p, g.Weapon, g.Name));
         }
 
         menu.Open(player);
@@ -215,19 +201,25 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
     private void GiveGun(CCSPlayerController player, string weapon, string displayName)
     {
-        if (!IsVip(player) || !player.PawnIsAlive)
-            return;
-
-        if (Config.GunsOncePerRound && _usedGunsThisRound.Contains(player.Slot))
+        try
         {
-            Msg(player, $"{ChatColors.Red}You already took a free gun this round.");
-            return;
-        }
+            if (!IsVip(player) || !player.PawnIsAlive)
+                return;
 
-        // Drop current weapon in same slot category for rifles/pistols roughly by giving
-        player.GiveNamedItem(weapon);
-        _usedGunsThisRound.Add(player.Slot);
-        Msg(player, $"{ChatColors.Lime}Received {displayName}");
+            if (Config.GunsOncePerRound && _usedGunsThisRound.Contains(player.Slot))
+            {
+                Msg(player, $"{ChatColors.Red}Already used free gun this round.");
+                return;
+            }
+
+            player.GiveNamedItem(weapon);
+            _usedGunsThisRound.Add(player.Slot);
+            Msg(player, $"{ChatColors.Lime}Received {displayName}");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "GiveGun failed");
+        }
     }
 
     #endregion
@@ -237,22 +229,6 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     private HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
     {
         _usedGunsThisRound.Clear();
-
-        foreach (var player in Utilities.GetPlayers())
-        {
-            if (!IsVip(player))
-                continue;
-
-            ApplyTag(player);
-            // Healthshot on spawn event is more reliable; also do here as backup next frame
-            var p = player;
-            Server.NextFrame(() =>
-            {
-                if (p.IsValid && p.PawnIsAlive)
-                    GiveExactOneHealthshot(p);
-            });
-        }
-
         return HookResult.Continue;
     }
 
@@ -262,13 +238,14 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         if (player == null || !IsVip(player))
             return HookResult.Continue;
 
-        Server.NextFrame(() =>
+        var p = player;
+        AddTimer(0.15f, () =>
         {
-            if (!player.IsValid || !player.PawnIsAlive)
+            if (!p.IsValid || !p.PawnIsAlive)
                 return;
 
-            ApplyTag(player);
-            GiveExactOneHealthshot(player);
+            ApplyTag(p);
+            GiveExactOneHealthshot(p);
         });
 
         return HookResult.Continue;
@@ -276,57 +253,67 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
     private void ApplyTag(CCSPlayerController player)
     {
-        if (!player.IsValid)
-            return;
+        try
+        {
+            if (!player.IsValid)
+                return;
 
-        var settings = SettingsOf(player);
-        if (!_originalClan.ContainsKey(player.Slot))
-            _originalClan[player.Slot] = player.Clan ?? "";
+            var settings = SettingsOf(player);
+            if (!_originalClan.ContainsKey(player.Slot))
+                _originalClan[player.Slot] = player.Clan ?? "";
 
-        if (settings.TagEnabled)
-            player.Clan = Config.VipTagText;
-        else
-            player.Clan = _originalClan.GetValueOrDefault(player.Slot, "");
-
-        // Force scoreboard refresh
-        Utilities.SetStateChanged(player, "CCSPlayerController", "m_szClan");
+            player.Clan = settings.TagEnabled ? Config.VipTagText : _originalClan.GetValueOrDefault(player.Slot, "");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "ApplyTag failed");
+        }
     }
 
     private void GiveExactOneHealthshot(CCSPlayerController player)
     {
-        if (!player.IsValid || player.PlayerPawn.Value is not { } pawn)
-            return;
-
-        RemoveWeapon(player, "weapon_healthshot");
-
-        var target = player;
-        Server.NextFrame(() =>
+        try
         {
-            if (!target.IsValid || !target.PawnIsAlive)
+            if (!player.IsValid || !player.PawnIsAlive)
                 return;
 
-            // If somehow still present, strip again then give exactly one
-            RemoveWeapon(target, "weapon_healthshot");
-            target.GiveNamedItem("weapon_healthshot");
-        });
+            // Safe remove (no AcceptInput Kill — that can crash)
+            player.RemoveItemByDesignerName("weapon_healthshot");
+
+            var target = player;
+            AddTimer(0.05f, () =>
+            {
+                if (!target.IsValid || !target.PawnIsAlive)
+                    return;
+
+                if (CountWeapons(target, "weapon_healthshot") > 0)
+                    return;
+
+                target.GiveNamedItem("weapon_healthshot");
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Healthshot failed");
+        }
     }
 
-    private static void RemoveWeapon(CCSPlayerController player, string designerName)
+    private static int CountWeapons(CCSPlayerController player, string designerName)
     {
-        if (player.PlayerPawn.Value?.WeaponServices?.MyWeapons == null)
-            return;
+        var count = 0;
+        var weapons = player.PlayerPawn.Value?.WeaponServices?.MyWeapons;
+        if (weapons == null)
+            return 0;
 
-        foreach (var handle in player.PlayerPawn.Value.WeaponServices.MyWeapons)
+        foreach (var handle in weapons)
         {
             var weapon = handle.Value;
-            if (weapon == null || !weapon.IsValid)
-                continue;
-
-            if (!weapon.DesignerName.Equals(designerName, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            weapon.AcceptInput("Kill");
+            if (weapon != null && weapon.IsValid &&
+                weapon.DesignerName.Equals(designerName, StringComparison.OrdinalIgnoreCase))
+                count++;
         }
+
+        return count;
     }
 
     private void OnClientDisconnect(int playerSlot)
@@ -341,14 +328,18 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
     private void OnEntitySpawned(CEntityInstance entity)
     {
+        if (!Config.EnableSmokeColor)
+            return;
+
         if (entity.DesignerName != "smokegrenade_projectile")
             return;
 
-        var projectile = entity.As<CSmokeGrenadeProjectile>();
+        var handle = entity.Handle;
         Server.NextFrame(() =>
         {
             try
             {
+                var projectile = new CSmokeGrenadeProjectile(handle);
                 if (!projectile.IsValid)
                     return;
 
@@ -373,80 +364,10 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             }
             catch (Exception ex)
             {
-                Logger.LogWarning(ex, "Failed to color smoke");
+                Logger.LogWarning(ex, "Smoke color failed");
             }
         });
     }
-
-    #endregion
-
-    #region Chat color
-
-    private HookResult OnSay(CCSPlayerController? player, CommandInfo info)
-        => HandleChat(player, info, teamOnly: false);
-
-    private HookResult OnSayTeam(CCSPlayerController? player, CommandInfo info)
-        => HandleChat(player, info, teamOnly: true);
-
-    private HookResult HandleChat(CCSPlayerController? player, CommandInfo info, bool teamOnly)
-    {
-        if (player == null || !player.IsValid || !IsVip(player))
-            return HookResult.Continue;
-
-        var settings = SettingsOf(player);
-        if (!settings.TagEnabled)
-            return HookResult.Continue;
-
-        var message = info.ArgString?.Trim() ?? "";
-        if (message.Length == 0)
-            return HookResult.Continue;
-
-        // Strip surrounding quotes if present
-        if (message.StartsWith('"') && message.EndsWith('"') && message.Length >= 2)
-            message = message[1..^1];
-
-        // Don't intercept commands
-        if (message.StartsWith('!') || message.StartsWith('/') || message.StartsWith('.'))
-            return HookResult.Continue;
-
-        var color = ResolveChatColor(Config.VipChatColor);
-        var teamTag = teamOnly ? $"{ChatColors.Grey}(TEAM) " : "";
-        var vipTag = settings.TagEnabled ? $"{ChatColors.Green}[{Config.VipTagText}] " : "";
-
-        var line = $"{teamTag}{vipTag}{color}{player.PlayerName}{ChatColors.Default}: {message}";
-
-        if (teamOnly)
-        {
-            var team = player.Team;
-            foreach (var p in Utilities.GetPlayers())
-            {
-                if (p.IsValid && p.Team == team)
-                    p.PrintToChat(line);
-            }
-        }
-        else
-        {
-            Server.PrintToChatAll(line);
-        }
-
-        return HookResult.Handled;
-    }
-
-    private static char ResolveChatColor(string name) => name.ToLowerInvariant() switch
-    {
-        "red" => ChatColors.Red,
-        "green" => ChatColors.Green,
-        "blue" => ChatColors.Blue,
-        "yellow" => ChatColors.Yellow,
-        "orange" => ChatColors.Orange,
-        "purple" => ChatColors.Purple,
-        "lime" => ChatColors.Lime,
-        "lightblue" => ChatColors.LightBlue,
-        "gold" => ChatColors.Gold,
-        "olive" => ChatColors.Olive,
-        "pink" => ChatColors.LightRed,
-        _ => ChatColors.Gold
-    };
 
     #endregion
 }
