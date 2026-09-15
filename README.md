@@ -4,68 +4,60 @@ CounterStrikeSharp plugin for YGuard / 5Stack public Comp.
 
 ## Features
 
-- `!vip` / `css_vip` — settings menu (VIP only)
-  - Toggle VIP scoreboard/chat tag
-  - Change smoke grenade color
-- `!g` / `/g` / `css_g` — free gun menu (once per round)
-- One `weapon_healthshot` every round (never stacks)
-- Colored VIP chat name when tag is enabled
-- VIP tag `ⱽᴵᴾ✶` on scoreboard (toggle in `!vip`)
-- Vote kick (`!votekick`) — ChatMenu + !yes/!no for all players; pass = kick
+- `!vip` — **panel** (CenterHtml window, not chat menu)
+  - Toggle VIP tag `ⱽᴵᴾ✶` (shown on name + clan)
+  - Smoke color
+  - Free guns / vote kick
+- `!g` — free gun panel (once per round, blocked on round 1 of each half)
+- One healthshot per round (never stacks)
+- Timed VIP stored in **vip_database.json** (survives restarts)
+
+## Admin commands
+
+```
+css_addvip <steamid64> <duration>
+css_removevip <steamid64>
+css_listvip
+```
+
+Duration examples: `30m` `12h` `7d` `30d` `2w` `1mo` `perm`
+
+```
+css_addvip 76561199388315261 30d
+css_addvip 76561199388315261 perm
+```
+
+## Data (persistent)
+
+Saved under:
+
+`addons/counterstrikesharp/configs/plugins/YGuardVIP/`
+
+- `vip_database.json` — VIP grants + expiry
+- `player_settings.json` — tag/smoke prefs
+
+Updating the plugin DLL does **not** wipe this folder.
 
 ## VIP permission
 
-Default flag: `@yguard/vip` (also accepts `@css/vip` and `@css/root`).
-
-### SimpleAdmin / admins.json example
-
-```json
-{
-  "76561199388315261": {
-    "identity": "76561199388315261",
-    "flags": ["@yguard/vip"]
-  }
-}
-```
-
-Online grant (temporary until reconnect unless saved in admins):
-
-```
-css_addvipflag 76561199388315261
-```
-
-## Build
-
-```bash
-dotnet build -c Release
-```
-
-Output: `bin/Release/net8.0/YGuardVIP.dll`
+Runtime flag: `@yguard/vip` (also accepts `@css/vip`). Timed grants apply this flag automatically from the DB.
 
 ## Install on 5Stack node
 
-Do **not** add this to `.5stack-plugins/index` (managed plugins get skipped unless in `ENABLED_PLUGINS`). Keep it hand-placed:
-
 ```bash
 PUBLIC=05cb789f-0e5e-433d-bbfc-6114e465323b
+cd /tmp
+rm -rf yguardvip YGuardVIP-1.1.0.zip
+wget -O YGuardVIP-1.1.0.zip "https://github.com/kianPk/YGuardVIP/raw/main/YGuardVIP-1.1.0.zip"
+unzip -o YGuardVIP-1.1.0.zip -d yguardvip
 
 for ROOT in \
   /opt/5stack/custom-plugins/addons/counterstrikesharp \
   /opt/5stack/servers/$PUBLIC/addons/counterstrikesharp
 do
-  mkdir -p "$ROOT/plugins/YGuardVIP"
-  cp -a YGuardVIP.dll lang "$ROOT/plugins/YGuardVIP/" 2>/dev/null || true
-  cp YGuardVIP.dll "$ROOT/plugins/YGuardVIP/"
-  cp -a lang "$ROOT/plugins/YGuardVIP/"
+  rm -rf "$ROOT/plugins/YGuardVIP"
+  cp -a yguardvip/YGuardVIP "$ROOT/plugins/"
 done
 ```
 
-Restart Public. Config is auto-generated at:
-
-`configs/plugins/YGuardVIP/YGuardVIP.json`
-
-Player settings (tag/smoke): next to the plugin DLL as `player_settings.json`.
-
-## Chat trigger
-
-Ensure `core.json` has `"!"` in `PublicChatTrigger` so `!vip` / `!g` work.
+Restart Public. Config: `configs/plugins/YGuardVIP/YGuardVIP.json`
