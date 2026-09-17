@@ -14,8 +14,9 @@ public class YGuardVipConfig : BasePluginConfig
     [JsonPropertyName("ChatPrefix")]
     public string ChatPrefix { get; set; } = "YGuard";
 
+    /// <summary>Shown as the scoreboard clan tag (small-caps style).</summary>
     [JsonPropertyName("VipTagText")]
-    public string VipTagText { get; set; } = "ⱽᴵᴾ✶";
+    public string VipTagText { get; set; } = "ⱽᴵᴾ";
 
     [JsonPropertyName("DefaultTagEnabled")]
     public bool DefaultTagEnabled { get; set; } = true;

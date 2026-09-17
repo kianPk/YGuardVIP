@@ -5,7 +5,7 @@ CounterStrikeSharp plugin for YGuard / 5Stack public Comp.
 ## Features
 
 - `!vip` — **panel** (CenterHtml window, not chat menu)
-  - Toggle VIP tag `ⱽᴵᴾ✶` (shown on name + clan)
+  - Toggle VIP tag `ⱽᴵᴾ` (scoreboard clan tag)
   - Smoke color
   - Free guns / vote kick
 - `!g` — free gun panel (once per round, blocked on round 1 of each half)
@@ -47,9 +47,9 @@ Runtime flag: `@yguard/vip` (also accepts `@css/vip`). Timed grants apply this f
 ```bash
 PUBLIC=05cb789f-0e5e-433d-bbfc-6114e465323b
 cd /tmp
-rm -rf yguardvip YGuardVIP-1.1.0.zip
-wget -O YGuardVIP-1.1.0.zip "https://github.com/kianPk/YGuardVIP/raw/main/YGuardVIP-1.1.0.zip"
-unzip -o YGuardVIP-1.1.0.zip -d yguardvip
+rm -rf yguardvip YGuardVIP-1.2.1.zip
+wget -O YGuardVIP-1.2.1.zip "https://github.com/kianPk/YGuardVIP/raw/main/YGuardVIP-1.2.1.zip"
+unzip -o YGuardVIP-1.2.1.zip -d yguardvip
 
 for ROOT in \
   /opt/5stack/custom-plugins/addons/counterstrikesharp \
@@ -61,3 +61,8 @@ done
 ```
 
 Restart Public. Config: `configs/plugins/YGuardVIP/YGuardVIP.json`
+
+Set tag text if needed:
+```json
+"VipTagText": "ⱽᴵᴾ"
+```

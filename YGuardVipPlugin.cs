@@ -14,7 +14,7 @@ namespace YGuardVIP;
 public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 {
     public override string ModuleName => "YGuard VIP";
-    public override string ModuleVersion => "1.2.0";
+    public override string ModuleVersion => "1.2.1";
     public override string ModuleAuthor => "YGuard";
     public override string ModuleDescription => "Timed VIP DB, panel menu, guns, smoke, healthshot, votekick";
 
@@ -50,6 +50,15 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         Config.SmokeColors["blue"] = [10, 60, 255];
         Config.SmokeColors["orange"] = [255, 90, 0];
         Config.SmokeColors["cyan"] = [0, 255, 255];
+
+        // Normalize legacy tag strings to small-caps VIP
+        var tag = (Config.VipTagText ?? "").Trim();
+        if (string.IsNullOrEmpty(tag)
+            || tag.Equals("VIP", StringComparison.OrdinalIgnoreCase)
+            || tag.StartsWith("ⱽᴵᴾ", StringComparison.Ordinal))
+        {
+            Config.VipTagText = "ⱽᴵᴾ";
+        }
     }
 
     private string DataDirectory
@@ -1202,9 +1211,8 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         foreach (var p in Utilities.GetPlayers())
         {
             if (!IsPlayerOk(p) || !IsVip(p)) continue;
-            // Only (re)apply if not yet tagged this session — avoids name churn crashes
-            if (!_tagAppliedSlots.Contains(p.Slot))
-                ApplyTag(p);
+            // Re-apply every round — game often clears clan / name mid-match
+            ApplyTag(p);
             if (BenefitsAllowed() && p.PawnIsAlive)
                 EnforceOneHealthshot(p, giveIfMissing: true);
             else if (p.PawnIsAlive)
@@ -1273,7 +1281,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
             var settings = SettingsOf(player);
             var wantTag = IsVip(player) && settings.TagEnabled;
-            var tag = Config.VipTagText;
+            var tag = string.IsNullOrWhiteSpace(Config.VipTagText) ? "ⱽᴵᴾ" : Config.VipTagText.Trim();
 
             RememberBaseName(player, tag);
 
@@ -1283,29 +1291,56 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             if (!_originalClan.ContainsKey(player.Slot))
                 _originalClan[player.Slot] = StripVipPrefixes(player.Clan ?? "", tag);
 
-            // Name prefix once per connect — no SetStateChanged (crashes), no clan VIP (double tag)
-            player.Clan = _originalClan.GetValueOrDefault(player.Slot, "");
+            var originalClan = _originalClan.GetValueOrDefault(player.Slot, "");
 
+            // Clan tag only (scoreboard) — keeps PlayerName stable and avoids double "VIP VIP".
+            // Always re-sync: CS2 often clears clan between rounds / team swaps.
             if (wantTag)
             {
-                if (!_tagAppliedSlots.Contains(player.Slot))
+                // Strip any leftover name prefix from older plugin versions
+                if (!string.Equals(player.PlayerName, baseName, StringComparison.Ordinal)
+                    && (player.PlayerName?.Contains(baseName, StringComparison.Ordinal) ?? false))
                 {
-                    var newName = $"{tag} {baseName}";
-                    if (!string.Equals(player.PlayerName, newName, StringComparison.Ordinal))
-                        player.PlayerName = newName;
-                    _tagAppliedSlots.Add(player.Slot);
+                    player.PlayerName = baseName;
                 }
+
+                if (!string.Equals(player.Clan ?? "", tag, StringComparison.Ordinal))
+                {
+                    player.Clan = tag;
+                    TryRefreshClan(player);
+                }
+
+                _tagAppliedSlots.Add(player.Slot);
             }
-            else if (_tagAppliedSlots.Contains(player.Slot)
-                     || (player.PlayerName?.StartsWith(tag + " ", StringComparison.Ordinal) ?? false))
+            else
             {
-                player.PlayerName = baseName;
-                _tagAppliedSlots.Remove(player.Slot);
+                if (_tagAppliedSlots.Contains(player.Slot)
+                    || IsVipTaggedName(player.PlayerName, tag)
+                    || string.Equals(player.Clan ?? "", tag, StringComparison.Ordinal))
+                {
+                    if (!string.Equals(player.PlayerName, baseName, StringComparison.Ordinal))
+                        player.PlayerName = baseName;
+                    player.Clan = originalClan;
+                    TryRefreshClan(player);
+                    _tagAppliedSlots.Remove(player.Slot);
+                }
             }
         }
         catch (Exception ex)
         {
             Logger.LogWarning(ex, "ApplyTag failed");
+        }
+    }
+
+    private static void TryRefreshClan(CCSPlayerController player)
+    {
+        try
+        {
+            Utilities.SetStateChanged(player, "CCSPlayerController", "m_szClan");
+        }
+        catch
+        {
+            // Some CSS builds crash on name SetStateChanged; clan is usually fine.
         }
     }
 
@@ -1319,6 +1354,17 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 
             if (!_originalName.TryGetValue(player.Slot, out var existing) || IsPlaceholderName(existing))
                 _originalName[player.Slot] = cleaned;
+            else
+            {
+                // If current name is clean and different, prefer the clean Steam name
+                var existingClean = StripVipPrefixes(existing, tag);
+                if (!IsPlaceholderName(cleaned)
+                    && !IsVipTaggedName(cleaned, tag)
+                    && cleaned.Length >= existingClean.Length)
+                {
+                    _originalName[player.Slot] = cleaned;
+                }
+            }
         }
         catch { /* ignore */ }
     }
@@ -1328,6 +1374,19 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
            || name.Equals("Player", StringComparison.OrdinalIgnoreCase)
            || name.Equals("unknown", StringComparison.OrdinalIgnoreCase);
 
+    private static bool IsVipTaggedName(string? name, string tag)
+    {
+        if (string.IsNullOrEmpty(name)) return false;
+        var n = name.Trim();
+        if (!string.IsNullOrEmpty(tag) && n.StartsWith(tag, StringComparison.Ordinal))
+            return true;
+        if (n.StartsWith("ⱽᴵᴾ", StringComparison.Ordinal))
+            return true;
+        if (n.StartsWith("VIP ", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return false;
+    }
+
     private static string StripVipPrefixes(string name, string tag)
     {
         if (string.IsNullOrEmpty(name))
@@ -1336,19 +1395,23 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         var n = name.Trim();
         for (var i = 0; i < 8; i++)
         {
+            var before = n;
+
             if (!string.IsNullOrEmpty(tag) && n.StartsWith(tag + " ", StringComparison.Ordinal))
-            {
                 n = n[(tag.Length + 1)..].TrimStart();
-                continue;
-            }
-
-            if (n.StartsWith("VIP ", StringComparison.OrdinalIgnoreCase))
-            {
+            else if (n.StartsWith("ⱽᴵᴾ✶ ", StringComparison.Ordinal))
+                n = n["ⱽᴵᴾ✶ ".Length..].TrimStart();
+            else if (n.StartsWith("ⱽᴵᴾ ", StringComparison.Ordinal))
+                n = n["ⱽᴵᴾ ".Length..].TrimStart();
+            else if (n.StartsWith("VIP ", StringComparison.OrdinalIgnoreCase))
                 n = n[4..].TrimStart();
-                continue;
-            }
+            else if (n.Equals("ⱽᴵᴾ✶", StringComparison.Ordinal)
+                     || n.Equals("ⱽᴵᴾ", StringComparison.Ordinal)
+                     || n.Equals("VIP", StringComparison.OrdinalIgnoreCase))
+                n = "";
 
-            break;
+            if (n == before)
+                break;
         }
 
         return n.Trim();
@@ -1359,7 +1422,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         try
         {
             if (!IsPlayerOk(player)) return;
-            var tag = Config.VipTagText;
+            var tag = string.IsNullOrWhiteSpace(Config.VipTagText) ? "ⱽᴵᴾ" : Config.VipTagText.Trim();
             RememberBaseName(player, tag);
             var baseName = _originalName.TryGetValue(player.Slot, out var o) && !IsPlaceholderName(o)
                 ? o
@@ -1370,6 +1433,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             _originalName[player.Slot] = baseName;
             player.PlayerName = baseName;
             player.Clan = _originalClan.GetValueOrDefault(player.Slot, "");
+            TryRefreshClan(player);
             _tagAppliedSlots.Remove(player.Slot);
         }
         catch { /* ignore */ }
