@@ -14,7 +14,7 @@ namespace YGuardVIP;
 public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 {
     public override string ModuleName => "YGuard VIP";
-    public override string ModuleVersion => "1.2.3";
+    public override string ModuleVersion => "1.2.4";
     public override string ModuleAuthor => "YGuard";
     public override string ModuleDescription => "Timed VIP DB, panel menu, guns, smoke, healthshot, votekick (Public only)";
 
