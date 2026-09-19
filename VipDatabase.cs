@@ -78,12 +78,29 @@ public class VipDatabase
 
     public VipGrant Grant(ulong steamId, TimeSpan? duration, string grantedBy)
     {
+        DateTime? expires;
+        if (!duration.HasValue)
+        {
+            expires = null;
+        }
+        else if (_grants.TryGetValue(steamId, out var existing)
+                 && existing.ExpiresAtUtc is DateTime prev
+                 && prev > DateTime.UtcNow)
+        {
+            // Stack remaining time when the player already has active VIP.
+            expires = prev.Add(duration.Value);
+        }
+        else
+        {
+            expires = DateTime.UtcNow.Add(duration.Value);
+        }
+
         var grant = new VipGrant
         {
             SteamId = steamId,
             GrantedAtUtc = DateTime.UtcNow,
             GrantedBy = grantedBy,
-            ExpiresAtUtc = duration.HasValue ? DateTime.UtcNow.Add(duration.Value) : null
+            ExpiresAtUtc = expires
         };
         _grants[steamId] = grant;
         Save();

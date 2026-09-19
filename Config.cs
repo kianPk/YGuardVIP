@@ -14,6 +14,13 @@ public class YGuardVipConfig : BasePluginConfig
     [JsonPropertyName("ChatPrefix")]
     public string ChatPrefix { get; set; } = "YGuard";
 
+    /// <summary>
+    /// When true (default), plugin idles on Ranked / Practice pods
+    /// (reads SERVER_TYPE). VIP features only run on Public/Custom dedicated.
+    /// </summary>
+    [JsonPropertyName("PublicOnly")]
+    public bool PublicOnly { get; set; } = true;
+
     /// <summary>Shown as the scoreboard clan tag (small-caps style).</summary>
     [JsonPropertyName("VipTagText")]
     public string VipTagText { get; set; } = "ⱽᴵᴾ";

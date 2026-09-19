@@ -14,14 +14,17 @@ namespace YGuardVIP;
 public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
 {
     public override string ModuleName => "YGuard VIP";
-    public override string ModuleVersion => "1.2.1";
+    public override string ModuleVersion => "1.2.3";
     public override string ModuleAuthor => "YGuard";
-    public override string ModuleDescription => "Timed VIP DB, panel menu, guns, smoke, healthshot, votekick";
+    public override string ModuleDescription => "Timed VIP DB, panel menu, guns, smoke, healthshot, votekick (Public only)";
 
     public YGuardVipConfig Config { get; set; } = new();
 
     private PlayerStore _store = null!;
     private VipDatabase _vipDb = null!;
+    /// <summary>False on Ranked/Practice — plugin loads but all VIP features no-op.</summary>
+    private bool _enabled = true;
+    private string _serverType = "";
     private readonly HashSet<int> _usedGunsThisRound = [];
     private readonly Dictionary<int, string> _originalClan = [];
     private readonly Dictionary<int, string> _originalName = [];
@@ -102,6 +105,18 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
         _store = new PlayerStore(Path.Combine(DataDirectory, "player_settings.json"));
         _vipDb = new VipDatabase(Path.Combine(DataDirectory, "vip_database.json"));
 
+        _serverType = (Environment.GetEnvironmentVariable("SERVER_TYPE") ?? "").Trim();
+        _enabled = ResolveEnabled(_serverType, Config.PublicOnly);
+
+        if (!_enabled)
+        {
+            Logger.LogInformation(
+                "YGuard VIP {Version} idle — PublicOnly (SERVER_TYPE={Type}). No VIP on Ranked/Practice.",
+                ModuleVersion,
+                string.IsNullOrEmpty(_serverType) ? "(unset)" : _serverType);
+            return;
+        }
+
         RegisterListener<Listeners.OnEntitySpawned>(OnEntitySpawned);
         RegisterListener<Listeners.OnClientDisconnect>(OnClientDisconnect);
         RegisterListener<Listeners.OnMapStart>(_ =>
@@ -152,8 +167,37 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
             catch (Exception ex) { Logger.LogWarning(ex, "ProcessExpirations timer failed"); }
         }, TimerFlags.REPEAT);
 
-        Logger.LogInformation("YGuard VIP {Version} loaded — DB: {Path}", ModuleVersion,
+        Logger.LogInformation(
+            "YGuard VIP {Version} active (SERVER_TYPE={Type}) — DB: {Path}",
+            ModuleVersion,
+            string.IsNullOrEmpty(_serverType) ? "(unset)" : _serverType,
             Path.Combine(DataDirectory, "vip_database.json"));
+    }
+
+    /// <summary>
+    /// Same rule as YGuardNoFF: Ranked match pods and Practice stay clean.
+    /// Public / Custom / Competitive dedicated boxes keep VIP.
+    /// </summary>
+    private static bool ResolveEnabled(string serverType, bool publicOnly)
+    {
+        if (!publicOnly)
+            return true;
+
+        return !string.Equals(serverType, "Ranked", StringComparison.OrdinalIgnoreCase)
+               && !string.Equals(serverType, "Practice", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool EnsureEnabled(CCSPlayerController? player, CommandInfo? info = null)
+    {
+        if (_enabled)
+            return true;
+
+        const string msg = "VIP is only available on Public servers.";
+        if (player != null && player.IsValid)
+            Msg(player, msg);
+        else
+            info?.ReplyToCommand(msg);
+        return false;
     }
 
     public override void Unload(bool hotReload)
@@ -612,6 +656,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     public void CmdVip(CCSPlayerController? player, CommandInfo _)
     {
         if (player == null || !player.IsValid) return;
+        if (!EnsureEnabled(player)) return;
         RunVip(player);
     }
 
@@ -620,6 +665,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     public void CmdGuns(CCSPlayerController? player, CommandInfo _)
     {
         if (player == null || !player.IsValid) return;
+        if (!EnsureEnabled(player)) return;
         RunGuns(player);
     }
 
@@ -628,6 +674,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     public void CmdVoteKick(CCSPlayerController? player, CommandInfo _)
     {
         if (player == null || !player.IsValid) return;
+        if (!EnsureEnabled(player)) return;
         RunVoteKick(player);
     }
 
@@ -640,6 +687,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     public void CmdYes(CCSPlayerController? player, CommandInfo _)
     {
         if (player == null || !player.IsValid) return;
+        if (!EnsureEnabled(player)) return;
         CastVote(player, yes: true);
     }
 
@@ -648,6 +696,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     public void CmdNo(CCSPlayerController? player, CommandInfo _)
     {
         if (player == null || !player.IsValid) return;
+        if (!EnsureEnabled(player)) return;
         CastVote(player, yes: false);
     }
 
@@ -656,6 +705,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     [CommandHelper(minArgs: 2, usage: "<steamid64> <duration: 7d|12h|30d|perm>", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
     public void CmdAddVip(CCSPlayerController? player, CommandInfo info)
     {
+        if (!EnsureEnabled(player, info)) return;
         if (!ulong.TryParse(info.GetArg(1), out var steamId))
         {
             info.ReplyToCommand("Usage: css_addvip <steamid64> <duration>   e.g. css_addvip 7656... 7d");
@@ -694,6 +744,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     [CommandHelper(minArgs: 1, usage: "<steamid64>", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
     public void CmdRemoveVip(CCSPlayerController? player, CommandInfo info)
     {
+        if (!EnsureEnabled(player, info)) return;
         if (!ulong.TryParse(info.GetArg(1), out var steamId))
         {
             info.ReplyToCommand("Usage: css_removevip <steamid64>");
@@ -717,6 +768,7 @@ public class YGuardVipPlugin : BasePlugin, IPluginConfig<YGuardVipConfig>
     [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
     public void CmdListVip(CCSPlayerController? player, CommandInfo info)
     {
+        if (!EnsureEnabled(player, info)) return;
         var list = _vipDb.ListActive();
         if (list.Count == 0)
         {
